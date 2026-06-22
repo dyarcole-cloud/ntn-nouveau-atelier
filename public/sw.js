@@ -2,7 +2,7 @@
 // Network-first for HTML so updates show immediately on reload;
 // cache-first for static assets (icons, manifest, fonts via CDN).
 
-const CACHE = 'nouveau-v2-onyx-2026-05-18';
+const CACHE = 'nouveau-v3-vite-2026-06-22';
 const SHELL = ['/', '/index.html', '/manifest.webmanifest', '/icon.svg', '/icon-maskable.svg', '/apple-touch-icon.svg'];
 
 self.addEventListener('install', (event) => {
@@ -27,8 +27,10 @@ self.addEventListener('fetch', (event) => {
 
   const url = new URL(req.url);
 
-  // Never cache Anthropic API or other dynamic third-party APIs
+  // Never cache dynamic APIs — Anthropic (agent) or Supabase (live DB state).
+  // Caching Supabase REST/realtime responses (cors 200) would serve stale data.
   if (url.host.includes('api.anthropic.com')) return;
+  if (url.host.includes('supabase.co')) return;
 
   // Network-first for navigation / HTML — keeps the app fresh
   if (req.mode === 'navigate' || (req.destination === 'document') || (req.headers.get('accept') || '').includes('text/html')) {
