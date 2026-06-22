@@ -2,7 +2,7 @@
 // Network-first for HTML so updates show immediately on reload;
 // cache-first for static assets (icons, manifest, fonts via CDN).
 
-const CACHE = 'nouveau-v2-onyx-2026-05-18';
+const CACHE = 'nouveau-v3-vite-2026-06-22';
 const SHELL = ['/', '/index.html', '/manifest.webmanifest', '/icon.svg', '/icon-maskable.svg', '/apple-touch-icon.svg'];
 
 self.addEventListener('install', (event) => {
