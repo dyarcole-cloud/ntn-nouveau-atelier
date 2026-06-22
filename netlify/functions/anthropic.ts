@@ -78,14 +78,19 @@ Cole is a peer. Skip preamble. Be specific about timelines and costs. Flag staff
   },
 };
 
+const CORS = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'POST, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type',
+};
 const json = (statusCode: number, body: any) => ({
   statusCode,
-  headers: { 'Content-Type': 'application/json' },
+  headers: { 'Content-Type': 'application/json', ...CORS },
   body: JSON.stringify(body),
 });
 
 export const handler = async (event: any) => {
-  if (event.httpMethod === 'OPTIONS') return { statusCode: 204, headers: { 'Content-Type': 'application/json' }, body: '' };
+  if (event.httpMethod === 'OPTIONS') return { statusCode: 204, headers: CORS, body: '' };
   if (event.httpMethod !== 'POST') return json(405, { error: 'method_not_allowed' });
 
   const key = process.env.ANTHROPIC_API_KEY;
@@ -99,11 +104,13 @@ export const handler = async (event: any) => {
   if (!profile) return json(400, { error: 'unknown_agent', message: `Unknown agentId: ${agentId}` });
   if (!Array.isArray(messages) || messages.length === 0) return json(400, { error: 'no_messages' });
 
-  // Sanitize + cap: last 20 turns, role normalized, content length-limited.
+  // Sanitize + cap: last 20 turns, role normalized, content length-limited,
+  // empty/whitespace content dropped (Anthropic rejects empty message content).
   const safeMessages = messages.slice(-20).map((m: any) => ({
     role: m && m.role === 'assistant' ? 'assistant' : 'user',
     content: String((m && m.content) || '').slice(0, 8000),
-  }));
+  })).filter((m: any) => m.content.trim().length > 0);
+  if (safeMessages.length === 0) return json(400, { error: 'no_messages' });
 
   const system = profile.systemPrompt + (liveStateSummary
     ? `\n\n## LIVE STATE (current platform state — read-only context)\n${String(liveStateSummary).slice(0, 4000)}`
@@ -116,7 +123,12 @@ export const handler = async (event: any) => {
       body: JSON.stringify({ model: MODEL, max_tokens: 1500, system, messages: safeMessages }),
     });
     const data: any = await resp.json().catch(() => ({}));
-    if (!resp.ok) return json(resp.status, { error: 'upstream', message: (data && data.error && data.error.message) || `Anthropic API error ${resp.status}` });
+    if (!resp.ok) {
+      // Don't leak upstream status/diagnostics to the browser — log server-side,
+      // return a generic 502.
+      console.error('[anthropic-proxy] upstream error', resp.status, data && data.error && data.error.message);
+      return json(502, { error: 'upstream', message: 'Agent upstream error. Check the Netlify function logs.' });
+    }
     const text = (data.content || []).filter((c: any) => c.type === 'text').map((c: any) => c.text).join('\n');
     return json(200, { text, model: MODEL });
   } catch (e: any) {
