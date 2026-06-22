@@ -33,7 +33,16 @@ const artifactAdapter = {
 };
 
 // ---- SUPABASE ADAPTER (optional cloud sync; same interface) ----------------
-const CFG: any = (typeof window !== 'undefined' && (window as any).NTN && (window as any).NTN.config) || {};
+// Env-driven (Vite). Default persistence is localStorage — Supabase activates
+// ONLY when VITE_PERSISTENCE_MODE=supabase AND the URL + anon key are present.
+// No project URL or key is hardcoded in source (set them in the Netlify env).
+const ENV: any = (typeof import.meta !== 'undefined' && (import.meta as any).env) || {};
+const CFG: any = {
+  SUPABASE_URL:      ENV.VITE_SUPABASE_URL || '',
+  SUPABASE_ANON_KEY: ENV.VITE_SUPABASE_ANON_KEY || '',
+  WORKSPACE_ID:      ENV.VITE_WORKSPACE_ID || 'default',
+  PERSISTENCE:       ENV.VITE_PERSISTENCE_MODE || 'localStorage',
+};
 const WS  = CFG.WORKSPACE_ID || 'default';
 const KEY_TABLE: Record<string, string> = {
   tasks:'tasks', decisions:'decisions', serviceState:'service_lines',
