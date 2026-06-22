@@ -39,7 +39,7 @@ const KEY_TABLE: Record<string, string> = {
   tasks:'tasks', decisions:'decisions', serviceState:'service_lines',
   capMap:'gates', layer0:'gates', checklist:'capital', ganttState:'capital', finModel:'financial_inputs', snapshots:'snapshots'
 };
-const LOCAL_ONLY = ['apiKey','agentThreads'];
+const LOCAL_ONLY = ['agentThreads']; // apiKey removed in phase 7 (server-side proxy)
 const bare = (k: string) => k.startsWith(PREFIX) ? k.slice(PREFIX.length) : k;
 
 let sb: any = null;
@@ -104,7 +104,7 @@ export function useAdapter(a: any) { adapter = a; }
 export function currentAdapter() { return adapter.name; }
 
 // ---- namespaced IO ---------------------------------------------------------
-export const KEYS = ['checklist','tasks','decisions','serviceState','ganttState','apiKey','agentThreads','finModel','capMap','layer0','snapshots','finScenarios'];
+export const KEYS = ['checklist','tasks','decisions','serviceState','ganttState','agentThreads','finModel','capMap','layer0','snapshots','finScenarios'];
 export async function get(key: string)        { return adapter.get(PREFIX + key); }
 export async function set(key: string, value: any) { return adapter.set(PREFIX + key, value); }
 export async function remove(key: string)     { return adapter.remove(PREFIX + key); }

@@ -1688,12 +1688,10 @@ Cole is a peer. Skip preamble. Be specific about timelines and costs. Flag staff
   }
 ];
 
-function AgentConsole({ apiKey, setApiKey, agentThreads, setAgentThreads }) {
+function AgentConsole({ agentThreads, setAgentThreads, liveState }: any) {
   const [activeAgent, setActiveAgent] = useState('orchestrator');
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
-  const [showApiSetup, setShowApiSetup] = useState(!apiKey);
-  const [tempKey, setTempKey] = useState('');
   const messagesEndRef = useRef<any>(null);
 
   const currentThread = agentThreads[activeAgent] || [];
@@ -1703,50 +1701,53 @@ function AgentConsole({ apiKey, setApiKey, agentThreads, setAgentThreads }) {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [currentThread]);
 
+  // Live, read-only state context handed to the agent (no PHI — business-ops only).
+  const buildLiveSummary = () => {
+    const ls = liveState || {};
+    const way = NTN.engine.wayThrough(ls.layer0, ls.serviceState);
+    const cp = NTN.engine.criticalPath(ls.layer0).slice(0, 3);
+    const fin = NTN.engine.financials(ls.finModel);
+    const tasks = ls.tasks || [];
+    const resolved = Object.keys(ls.decisions || {}).length;
+    return [
+      `Way-through phase: ${way.phase} (Wave 1 live ${way.live}/${way.launch.length}).`,
+      `Top blockers: ${cp.length ? cp.map((g: any) => `${g.name} [owner ${g.owner}, unlocks ${g.downstream} lines]`).join('; ') : 'none — spine clear'}.`,
+      `Layer 0: ${NTN.engine.LAYER0.map((g: any) => `${g.id}=${NTN.engine.l0StatusOf(g.id, ls.layer0)}`).join(', ')}.`,
+      `Decisions: ${Math.max(0, OPEN_DECISIONS.length - resolved)} pending of ${OPEN_DECISIONS.length}.`,
+      `Active tasks: ${tasks.filter((t: any) => t.status === 'in_progress').length}.`,
+      `Financials: $${Math.round(fin.m12Monthly).toLocaleString()}/mo, ${(fin.blendedGM * 100).toFixed(0)}% GM, $${Math.round(fin.annualLabor).toLocaleString()} labor.`,
+      ls.activeLine && ls.activeLine !== 'all' ? `Active line lens: ${ls.activeLine}.` : `Line lens: all lines.`,
+    ].join('\n');
+  };
+
   const callAPI = async () => {
     if (!input.trim() || loading) return;
 
-    const userMsg = { role:'user', content: input, ts: Date.now() };
+    const userMsg = { role: 'user', content: input, ts: Date.now() };
     const newThread = [...currentThread, userMsg];
     setAgentThreads({ ...agentThreads, [activeAgent]: newThread });
     setInput('');
     setLoading(true);
 
     try {
-      // Build conversation history for API
       const messages = newThread.map(m => ({ role: m.role, content: m.content }));
-
-      const response = await fetch('https://api.anthropic.com/v1/messages', {
+      // Secure proxy — the API key lives server-side in Netlify, never the browser.
+      const response = await fetch('/.netlify/functions/anthropic', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': apiKey,
-          'anthropic-version': '2023-06-01',
-          'anthropic-dangerous-direct-browser-access': 'true'
-        },
-        body: JSON.stringify({
-          model: 'claude-opus-4-7',
-          max_tokens: 1500,
-          system: profile.systemPrompt,
-          messages: messages
-        })
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ agentId: activeAgent, messages, liveStateSummary: buildLiveSummary() }),
       });
-
+      const data: any = await response.json().catch(() => ({}));
       if (!response.ok) {
-        const err = await response.text();
-        throw new Error(`API ${response.status}: ${err.slice(0,200)}`);
+        const msg = data.error === 'not_configured'
+          ? 'Agent proxy isn’t configured yet. Set ANTHROPIC_API_KEY in the Netlify environment to enable the agents — until then this stays a planning surface.'
+          : (data.message || `Proxy error ${response.status}`);
+        throw new Error(msg);
       }
-
-      const data = await response.json();
-      const assistantText = (data.content || [])
-        .filter(c => c.type === 'text')
-        .map(c => c.text)
-        .join('\n');
-
-      const assistantMsg = { role:'assistant', content: assistantText, ts: Date.now() };
+      const assistantMsg = { role: 'assistant', content: data.text || '', ts: Date.now() };
       setAgentThreads(prev => ({ ...prev, [activeAgent]: [...newThread, assistantMsg] }));
     } catch (e: any) {
-      const errMsg = { role:'assistant', content: `[Error: ${e.message}]\n\nIf this is a CORS issue, the Anthropic API needs to be called from a server. For a deployed version, set up a Netlify function proxy. For now, you can paste responses manually or use this UI as a planning surface.`, ts: Date.now(), error:true };
+      const errMsg = { role: 'assistant', content: `[${e.message}]`, ts: Date.now(), error: true };
       setAgentThreads(prev => ({ ...prev, [activeAgent]: [...newThread, errMsg] }));
     } finally {
       setLoading(false);
@@ -1757,14 +1758,6 @@ function AgentConsole({ apiKey, setApiKey, agentThreads, setAgentThreads }) {
     setAgentThreads({ ...agentThreads, [activeAgent]: [] });
   };
 
-  const saveKey = () => {
-    if (tempKey.trim()) {
-      setApiKey(tempKey.trim());
-      setShowApiSetup(false);
-      setTempKey('');
-    }
-  };
-
   return (
     <div className="space-y-5">
       <div className="glass rounded-3xl p-6 ring-rose">
@@ -1773,30 +1766,8 @@ function AgentConsole({ apiKey, setApiKey, agentThreads, setAgentThreads }) {
             <h3 className="serif text-3xl">Agent Console</h3>
             <p className="text-[13px] text-[#71717A] mt-1">Live AI agents working inside the roadmap · Each pre-loaded with platform context</p>
           </div>
-          <button onClick={() => setShowApiSetup(!showApiSetup)} className="text-[12px] text-[#ff3b30] hover:text-[#F0ABFC]">
-            {apiKey ? '✓ API Connected · Edit' : '⚠ Set API Key'}
-          </button>
+          <span className="text-[11px] mono px-2 py-0.5 rounded self-start" style={{color:'var(--pos)', border:'1px solid var(--pos)'}} title="The Anthropic API key lives server-side in the Netlify function — never in the browser.">via secure proxy</span>
         </div>
-
-        {showApiSetup && (
-          <div className="rounded-xl p-4 mb-4 border" style={{background:'rgba(251,191,36,0.06)', borderColor:'rgba(251,191,36,0.3)'}}>
-            <div className="flex items-center gap-2 mb-2">
-              <span className="w-1.5 h-1.5 rounded-full" style={{background:'var(--warn)'}}/>
-              <div className="text-[11px] uppercase tracking-[0.2em] font-semibold mono warn-text">Anthropic API Key</div>
-            </div>
-            <p className="text-[11.5px] mb-3 leading-relaxed" style={{color:'var(--dim)'}}>Stored locally via persistent storage. Direct browser-to-API calls use the <span className="mono" style={{color:'var(--ink)'}}>dangerous-direct-browser-access</span> header — for production, route through a Netlify function proxy (your embr/ComplianceIQ pattern).</p>
-            <div className="flex gap-2">
-              <input
-                type="password"
-                value={tempKey}
-                onChange={e => setTempKey(e.target.value)}
-                placeholder="sk-ant-…"
-                className="field mono flex-1"
-              />
-              <button onClick={saveKey} disabled={!tempKey.trim()} className="btn-primary">Save Key</button>
-            </div>
-          </div>
-        )}
 
         {/* Agent selector */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
@@ -1833,7 +1804,7 @@ function AgentConsole({ apiKey, setApiKey, agentThreads, setAgentThreads }) {
           <div className="flex items-center gap-2">
             <div className="w-2 h-2 rounded-full pulse-data" style={{background:profile.color, boxShadow:`0 0 10px ${profile.color}`}}/>
             <div className="font-semibold text-[13.5px]" style={{color:'var(--ink-bright)'}}>{profile.name}</div>
-            <span className="chip mono">claude-opus-4-7</span>
+            <span className="chip mono">via secure proxy</span>
             {currentThread.length > 0 && <span className="text-[11px] mono" style={{color:'var(--muted)'}}>· {currentThread.length} msgs</span>}
           </div>
           {currentThread.length > 0 && (
@@ -1888,14 +1859,14 @@ function AgentConsole({ apiKey, setApiKey, agentThreads, setAgentThreads }) {
             value={input}
             onChange={e => setInput(e.target.value)}
             onKeyDown={e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) callAPI(); }}
-            placeholder={apiKey ? `Ask ${profile.name}…  ⌘+Enter to send` : 'Set API key above to enable agents'}
-            disabled={!apiKey || loading}
+            placeholder={`Ask ${profile.name}…  ⌘+Enter to send`}
+            disabled={loading}
             rows={2}
             className="field flex-1 resize-none disabled:opacity-50"
           />
           <button
             onClick={callAPI}
-            disabled={!apiKey || !input.trim() || loading}
+            disabled={!input.trim() || loading}
             className="btn-primary self-end"
           >Send</button>
         </div>
@@ -1918,8 +1889,7 @@ function AgentConsole({ apiKey, setApiKey, agentThreads, setAgentThreads }) {
             <button
               key={q}
               onClick={() => setInput(q)}
-              disabled={!apiKey}
-              className="btn-ghost disabled:opacity-40"
+              className="btn-ghost"
             >{q}</button>
           ))}
         </div>
@@ -2229,9 +2199,9 @@ function GuideView({ checklist, tasks, decisions, serviceState, setActiveTab }) 
         <div className="md:col-span-2 onyx-card p-5" style={{borderColor:'var(--glow)'}}>
           <div className="flex items-center gap-2 mb-2">
             <span className="chip chip-data">model</span>
-            <div className="mono text-[13px]" style={{color:'var(--ink-bright)'}}>claude-opus-4-7</div>
+            <div className="mono text-[13px]" style={{color:'var(--ink-bright)'}}>Claude · via secure proxy</div>
           </div>
-          <p className="text-[12.5px] leading-relaxed" style={{color:'var(--dim)'}}>API key stored locally in your browser. Direct browser-to-API calls use <span className="mono" style={{color:'var(--ink)'}}>anthropic-dangerous-direct-browser-access</span>. For a production multi-user version, route through a Netlify function proxy (your <span className="mono" style={{color:'var(--data)'}}>embr</span> / <span className="mono" style={{color:'var(--data)'}}>ComplianceIQ</span> pattern).</p>
+          <p className="text-[12.5px] leading-relaxed" style={{color:'var(--dim)'}}>The Anthropic API key lives server-side in a Netlify function (<span className="mono" style={{color:'var(--data)'}}>/.netlify/functions/anthropic</span>) — never in the browser. Set <span className="mono" style={{color:'var(--ink)'}}>ANTHROPIC_API_KEY</span> (and optionally <span className="mono" style={{color:'var(--ink)'}}>ANTHROPIC_MODEL</span>) in the Netlify environment to enable the agents.</p>
         </div>
       </div>
 
@@ -2846,7 +2816,7 @@ function IntelligenceZone(props) {
   return (
     <div>
       <SubTabs tabs={[{id:'agent',label:'Agent'},{id:'changelog',label:'Changelog'}]} active={sub} set={setSub}/>
-      {sub==='agent' && <AgentConsole apiKey={props.apiKey} setApiKey={props.setApiKey} agentThreads={props.agentThreads} setAgentThreads={props.setAgentThreads}/>}
+      {sub==='agent' && <AgentConsole agentThreads={props.agentThreads} setAgentThreads={props.setAgentThreads} liveState={props.liveState}/>}
       {sub==='changelog' && <Changelog snapshots={props.snapshots} setSnapshots={props.setSnapshots} liveState={props.liveState}/>}
     </div>
   );
@@ -2863,7 +2833,7 @@ function App() {
   const [decisions, setDecisions, decLoaded] = usePersistedState('decisions', {});
   const [serviceState, setServiceState, ssLoaded] = usePersistedState('serviceState', {});
   const [ganttState, setGanttState] = usePersistedState('ganttState', {});
-  const [apiKey, setApiKey] = usePersistedState('apiKey', '');
+  // apiKey removed in phase 7 — agents call the server-side Netlify proxy.
   const [agentThreads, setAgentThreads] = usePersistedState('agentThreads', {});
   const [finModel, setFinModel, fmLoaded] = usePersistedState('finModel', NTN.engine.FIN_DRIVERS);
   const [capMap, setCapMap] = usePersistedState('capMap', {});
@@ -2979,7 +2949,7 @@ function App() {
           {activeTab === 'spine' && <CapabilityMap capMap={capMap} setCapMap={setCapMap} layer0={layer0} setLayer0={setLayer0} serviceState={serviceState} setActiveTab={goZone}/>}
           {activeTab === 'capital' && <CapitalView finModel={finModel} setFinModel={setFinModel} fin={fin} activeLine={activeLine} finScenarios={finScenarios} setFinScenarios={setFinScenarios}/>}
           {activeTab === 'execution' && <ExecutionZone tasks={tasks} setTasks={setTasks} decisions={decisions} setDecisions={setDecisions} ganttState={ganttState} setGanttState={setGanttState} setSelection={setSelection} activeLine={activeLine} finModel={finModel} serviceState={serviceState} layer0={layer0} setLayer0={setLayer0}/>}
-          {activeTab === 'intelligence' && <IntelligenceZone apiKey={apiKey} setApiKey={setApiKey} agentThreads={agentThreads} setAgentThreads={setAgentThreads} snapshots={snapshots} setSnapshots={setSnapshots} liveState={{ checklist, finModel, serviceState, layer0, decisions }}/>}
+          {activeTab === 'intelligence' && <IntelligenceZone agentThreads={agentThreads} setAgentThreads={setAgentThreads} snapshots={snapshots} setSnapshots={setSnapshots} liveState={{ checklist, finModel, serviceState, layer0, decisions, tasks, activeLine }}/>}
           {activeTab === 'clinical' && <ClinicalReferenceView setSelection={setSelection} setActiveTab={goZone}/>}
           {activeTab === 'staffing' && <StaffingView/>}
         </main>
