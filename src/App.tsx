@@ -153,16 +153,8 @@ function CommandBrief({ checklist, setChecklist, tasks, setTasks, serviceState, 
 
     // If checking on, route to task manager
     if (!wasChecked) {
-      const newTask = {
-        id: `task_${Date.now()}_${idx}`,
-        title: action,
-        owner: owner,
-        cost: cost,
-        source: 'Critical Path 14-Day',
-        status: 'in_progress',
-        created: new Date().toISOString(),
-        wave: 1
-      };
+      const newTask = NTN.engine.taskFromCriticalPath(CRITICAL_PATH_14[idx] || { action, owner, cost, day: `Day ${idx + 1}` }, idx);
+      newTask.wave = 1;
       setTasks([newTask, ...tasks]);
     }
   };
@@ -748,16 +740,7 @@ function ServiceLines({ serviceState, setServiceState, tasks, setTasks, layer0, 
 
     if (!wasResolved) {
       const sl: any = SERVICE_LINES.find(s => s.id === slId);
-      const newTask = {
-        id: `task_${Date.now()}_${slId}_${riskIdx}`,
-        title: `Resolve blocking risk: ${sl.blockingRisks[riskIdx]}`,
-        owner: 'Compliance/Clinical',
-        cost: 0,
-        source: `${sl.short} blocking risk`,
-        status: 'in_progress',
-        created: new Date().toISOString(),
-        wave: sl.wave
-      };
+      const newTask = NTN.engine.taskFromBlockingRisk(sl, riskIdx);
       setTasks([newTask, ...tasks]);
     }
   };
@@ -1344,16 +1327,10 @@ function DecisionsView({ decisions, setDecisions, tasks, setTasks, activeLine, l
 
       // Route to task manager if "Defer to legal" or "Yes"
       if (choice === 'yes' || choice === 'legal') {
-        const newTask = {
-          id: `task_dec_${Date.now()}_${id}`,
-          title: choice === 'legal' ? `[LEGAL REVIEW] ${decision.q}` : `Implement decision: ${decision.q}`,
-          owner: choice === 'legal' ? 'Healthcare Counsel' : 'Operations',
-          cost: 0,
-          source: `Decision ${id} · ${decision.category}`,
-          status: 'in_progress',
-          created: new Date().toISOString(),
-          wave: decision.wave
-        };
+        const newTask = NTN.engine.taskFromDecision(decision, choice);
+        newTask.title = choice === 'legal' ? `[LEGAL REVIEW] ${decision.q}` : `Implement decision: ${decision.q}`;
+        newTask.owner = choice === 'legal' ? 'Healthcare Counsel' : 'Operations';
+        newTask.source = `Decision ${id} · ${decision.category}`;
         setTasks([newTask, ...tasks]);
       }
     }
@@ -1464,6 +1441,9 @@ function TaskManager({ tasks, setTasks, activeLine }) {
   const [filter, setFilter] = useState('all');
   const [newTaskTitle, setNewTaskTitle] = useState('');
   const [newTaskOwner, setNewTaskOwner] = useState('');
+  const [newTaskSeverity, setNewTaskSeverity] = useState('medium');
+  const [newTaskDue, setNewTaskDue] = useState('');
+  const sevColor = (s) => (s === 'critical' || s === 'high') ? 'var(--crit)' : s === 'medium' ? 'var(--warn)' : 'var(--muted)';
 
   const filtered = tasks.filter(t => {
     const passWave = (!activeLine || activeLine === 'all' || t.wave === 0 || t.wave === (SERVICE_LINES.find(s => s.id === activeLine) || {}).wave);
@@ -1493,11 +1473,15 @@ function TaskManager({ tasks, setTasks, activeLine }) {
       source: 'Manual entry',
       status: 'in_progress',
       created: new Date().toISOString(),
-      wave: 0
+      wave: 0,
+      severity: newTaskSeverity,
+      dueDate: newTaskDue || undefined
     };
     setTasks([newTask, ...tasks]);
     setNewTaskTitle('');
     setNewTaskOwner('');
+    setNewTaskSeverity('medium');
+    setNewTaskDue('');
   };
 
   const stats = {
@@ -1538,6 +1522,24 @@ function TaskManager({ tasks, setTasks, activeLine }) {
               onChange={e => setNewTaskOwner(e.target.value)}
               placeholder="Owner"
               className="w-32 px-3 py-2 rounded-lg inset-bg border border-[#1C1C24] text-sm focus:outline-none focus:border-rose-400"
+            />
+            <select
+              value={newTaskSeverity}
+              onChange={e => setNewTaskSeverity(e.target.value)}
+              title="Severity"
+              className="w-28 px-2 py-2 rounded-lg inset-bg border border-[#1C1C24] text-sm focus:outline-none focus:border-rose-400 mono"
+            >
+              <option value="low">low</option>
+              <option value="medium">medium</option>
+              <option value="high">high</option>
+              <option value="critical">critical</option>
+            </select>
+            <input
+              type="date"
+              value={newTaskDue}
+              onChange={e => setNewTaskDue(e.target.value)}
+              title="Due date (optional)"
+              className="w-36 px-3 py-2 rounded-lg inset-bg border border-[#1C1C24] text-sm focus:outline-none focus:border-rose-400 mono"
             />
             <button onClick={addManual} className="btn-primary px-4 py-2 rounded-lg text-sm font-medium">Add</button>
           </div>
@@ -1580,10 +1582,15 @@ function TaskManager({ tasks, setTasks, activeLine }) {
                 <div className="flex-1 min-w-0">
                   <div className={`text-sm font-medium ${t.status==='complete' ? 'line-through text-[#71717A]' : 'tk-inkb'}`}>{t.title}</div>
                   <div className="flex items-center gap-2 flex-wrap mt-1">
+                    {t.severity && <span className="text-[10px] uppercase tracking-wider mono px-1.5 py-0.5 rounded font-semibold" style={{ color: sevColor(t.severity), border: `1px solid ${sevColor(t.severity)}` }}>{t.severity}</span>}
                     <span className="text-[11px] text-[#71717A]">{t.owner}</span>
                     {t.cost > 0 && <span className="mono text-[11px] text-[#ff3b30]">${t.cost.toLocaleString()}</span>}
                     <span className="text-[11px] text-[#52525B]">·</span>
                     <span className="text-[11px] text-[#71717A]">{t.source}</span>
+                    {t.linkedLineId && <span className="text-[10px] mono px-1.5 py-0.5 rounded" style={{ color: 'var(--data)', background: 'var(--glow-soft)' }}>line:{t.linkedLineId}</span>}
+                    {t.linkedGateId && <span className="text-[10px] mono px-1.5 py-0.5 rounded" style={{ color: 'var(--data)', background: 'var(--glow-soft)' }}>gate:{t.linkedGateId}</span>}
+                    {t.linkedDecisionId && <span className="text-[10px] mono px-1.5 py-0.5 rounded" style={{ color: 'var(--data)', background: 'var(--glow-soft)' }}>{t.linkedDecisionId}</span>}
+                    {t.dueDate && <span className="text-[10px] mono text-[#71717A]">due {t.dueDate}</span>}
                     {t.wave > 0 && <span className="text-[11px] uppercase tracking-wider px-1.5 py-0.5 rounded font-semibold text-white" style={{background:WAVES[t.wave-1].color}}>W{t.wave}</span>}
                   </div>
                 </div>
