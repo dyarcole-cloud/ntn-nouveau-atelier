@@ -57,3 +57,22 @@ the original also live in the source folder outside the repo.
 - `npm run dev | build | preview | typecheck | test`
 - Netlify: git-based build (`netlify.toml` → `npm run build`, publish `dist`),
   replacing the prior manual-CLI static deploy. PWA assets ship from `/public`.
+
+## Phases completed (branch `cleanup/production-os`)
+
+0. Baseline branch + these notes.
+1. Vite + React 18 + TS scaffold; faithful verbatim port; CDN runtime removed.
+2. Typed data extracted to `src/data/*` + `src/types/domain.ts` (numbers verbatim).
+3. Engine + storage formalized into pure `src/lib/engine.ts` + `src/lib/storage.ts`
+   (32 Vitest tests; dossier numbers + legacy-state migration locked).
+4. `WayThroughPanel` leads the Command surface.
+5. Operational `Task` objects (factories wired; severity/links; safe migration).
+6. Source registry + `needs-review` affordances (no invented citations).
+7. Netlify function agent proxy; browser API key removed (code-reviewed + hardened).
+8. Env-driven Supabase config (no hardcoded keys); `supabase/schema.sql`.
+9. Nav grouped into 5 OS surfaces via the zones manifest.
+10. README + SECURITY_NOTES + `.env.example`; `index.legacy.html` removed; final build.
+
+Every phase kept `npm run typecheck` + `npm run build` green and was render-verified.
+The `ntn-nouveau:*` localStorage keys, all numbers/claims, the 4 themes, the PWA,
+and the full feature set are preserved.
