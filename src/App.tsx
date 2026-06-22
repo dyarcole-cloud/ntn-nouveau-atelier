@@ -12,6 +12,9 @@ import * as engine from './lib/engine';
 import * as storage from './lib/storage';
 import { usePersistedState } from './lib/storage';
 import WayThroughPanel from './components/WayThroughPanel';
+import SourceBadge from './components/SourceBadge';
+import SourceRegistryView from './components/SourceRegistryView';
+import { clinicalSource, getSource } from './data/sourceRegistry';
 // NOTE: the body below keeps its original `const { useState, ... } = React`
 // destructure (faithful port). React default import satisfies it.
 
@@ -398,20 +401,21 @@ function CommandBrief({ checklist, setChecklist, tasks, setTasks, serviceState, 
         <p className="text-[12px] mb-5 mono" style={{color:'var(--dim)'}}>Where post-validation findings changed the original dossier numbers</p>
         <div className="space-y-2 text-[13px]">
           {[
-            { tone:'pos',  title:'PGx Revenue — UP 86%', body:'Medicare CLFS rates 2.5-5x higher than estimated. 81226 (CYP2D6) jumps from $85-150 to $406-451. Corrected M12 revenue: $54,400/mo (was $29,272). Break-even at 15-20 tests/mo, not 30.' },
-            { tone:'warn', title:'Spravato PA Threshold — Stricter', body:'UHC/Optum require 3 failed antidepressants from 2 different classes, each ≥8 weeks (not 2). Revise all PA templates BEFORE first submission. Document 3 for all payors.' },
-            { tone:'crit', title:'Spravato POS 55 — Unresolved', body:'Janssen billing guides only list POS 11, 22, 53. Must obtain CA healthcare counsel opinion before launch. Default to POS 11 until confirmed.' },
-            { tone:'pos',  title:'TMS PA Supervision — Looser', body:'PA supervision ratio 1:4 → 1:8 effective 1/1/2026 (AB 1501). More staffing flexibility. Update org chart and supervision protocols.' },
-            { tone:'warn', title:'MagVenture 510(k) — Corrected', body:'K160280 was incorrect. Use K150641, K170114, K172667, K173620, K252032, K251119 (MDD clearances) on credentialing packets.' }
-          ].map((c, i) => {
+            { tone:'pos',  sourceId:'fin:pgx-rate',      title:'PGx Revenue — UP 86%', body:'Medicare CLFS rates 2.5-5x higher than estimated. 81226 (CYP2D6) jumps from $85-150 to $406-451. Corrected M12 revenue: $54,400/mo (was $29,272). Break-even at 15-20 tests/mo, not 30.' },
+            { tone:'warn', sourceId:'reg:spravato-pa',   title:'Spravato PA Threshold — Stricter', body:'UHC/Optum require 3 failed antidepressants from 2 different classes, each ≥8 weeks (not 2). Revise all PA templates BEFORE first submission. Document 3 for all payors.' },
+            { tone:'crit', sourceId:'reg:pos55',         title:'Spravato POS 55 — Unresolved', body:'Janssen billing guides only list POS 11, 22, 53. Must obtain CA healthcare counsel opinion before launch. Default to POS 11 until confirmed.' },
+            { tone:'pos',  sourceId:'reg:ab1501',        title:'TMS PA Supervision — Looser', body:'PA supervision ratio 1:4 → 1:8 effective 1/1/2026 (AB 1501). More staffing flexibility. Update org chart and supervision protocols.' },
+            { tone:'warn', sourceId:'reg:magventure-510k', title:'MagVenture 510(k) — Corrected', body:'K160280 was incorrect. Use K150641, K170114, K172667, K173620, K252032, K251119 (MDD clearances) on credentialing packets.' }
+          ].map((c: any, i) => {
             const color = c.tone==='pos' ? 'var(--pos)' : c.tone==='warn' ? 'var(--warn)' : 'var(--crit)';
             const bg = c.tone==='pos' ? 'rgba(52,211,153,0.06)' : c.tone==='warn' ? 'rgba(251,191,36,0.06)' : 'rgba(244,63,94,0.06)';
             const border = c.tone==='pos' ? 'rgba(52,211,153,0.25)' : c.tone==='warn' ? 'rgba(251,191,36,0.25)' : 'rgba(244,63,94,0.25)';
             return (
               <div key={i} className="p-3.5 rounded-md border" style={{background:bg, borderColor:border}}>
-                <div className="flex items-center gap-2 mb-1">
+                <div className="flex items-center gap-2 mb-1 flex-wrap">
                   <span className="w-1 h-3.5 rounded-sm" style={{background:color}}/>
                   <div className="font-semibold text-[13px]" style={{color}}>{c.title}</div>
+                  {c.sourceId && <SourceBadge status={(getSource(c.sourceId) || {}).status} title={(getSource(c.sourceId) || {}).notes}/>}
                 </div>
                 <div className="text-[12.5px] mt-1 leading-relaxed pl-3" style={{color:'var(--dim)'}}>{c.body}</div>
               </div>
@@ -1948,6 +1952,9 @@ function ClinicalReferenceView({ setSelection, setActiveTab }) {
         </p>
       </div>
 
+      {/* Source governance — the volatile-claim registry */}
+      <SourceRegistryView />
+
       {/* Filter */}
       <div className="flex items-center gap-2 flex-wrap">
         <span className="text-[10px] uppercase tracking-[0.18em] mono mr-1" style={{color:'var(--muted)'}}>Filter</span>
@@ -2012,7 +2019,10 @@ function ClinicalReferenceView({ setSelection, setActiveTab }) {
                   </div>
 
                   <div className="pt-3 flex items-center justify-between flex-wrap gap-2 hairline-t">
-                    <div className="text-[10px] mono" style={{color:'var(--faint)'}}>src · master orchestrator synth · clinical reference · 2026-04-28</div>
+                    <div className="flex items-center gap-2 flex-wrap text-[10px] mono" style={{color:'var(--faint)'}}>
+                      <SourceBadge status="needs-review" title={clinicalSource(svc.slId, svc.name).notes}/>
+                      <span>review: Medical Director · annual · verified never</span>
+                    </div>
                     {setSelection && SERVICE_LINES.find(s => s.id === svc.slId) && (
                       <button onClick={(e) => { e.stopPropagation(); setSelection({type:'service-line', id: svc.slId}); }} className="btn-primary text-[11px]">Operational dossier →</button>
                     )}
