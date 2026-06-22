@@ -8,6 +8,9 @@ import { CRITICAL_PATH_14 } from './data/criticalPath';
 import { STAFFING_MATRIX } from './data/staffing';
 import { CAPABILITY_LAYERS, MATURITY_META } from './data/capabilityMap';
 import { CAPITAL_BY_MONTH, REVENUE_TRAJECTORY } from './data/capital';
+import * as engine from './lib/engine';
+import * as storage from './lib/storage';
+import { usePersistedState } from './lib/storage';
 // NOTE: the body below keeps its original `const { useState, ... } = React`
 // destructure (faithful port). React default import satisfies it.
 
@@ -15,336 +18,46 @@ import { CAPITAL_BY_MONTH, REVENUE_TRAJECTORY } from './data/capital';
 const { useState, useEffect, useRef, useMemo, useCallback } = React;
 
 // ===========================================================================
-// PERSISTENCE — graceful storage abstraction (works inside Claude artifact +
-// localStorage fallback for Netlify deploy)
-// ===========================================================================
-const STORAGE_PREFIX = 'ntn-nouveau:';
-
-// ===========================================================================
-// NTN.engine — single state chokepoint. All reads/writes go through here.
-// Persistence lives behind ONE swappable adapter (localStorage today; replace
-// `localAdapter` with a Supabase adapter later — same async get/set/remove).
+// NTN.engine — assembled from the extracted pure engine (src/lib/engine.ts) and
+// the storage layer (src/lib/storage.ts). Components read it via NTN.engine.*;
+// the exposed surface is identical to the original IIFE. usePersistedState is
+// imported directly (it talks to storage, not through this object).
 // ===========================================================================
 window.NTN = window.NTN || {};
-NTN.engine = (function () {
-  const PREFIX = STORAGE_PREFIX;
-  const hasArtifact = typeof window !== 'undefined' && window.storage && typeof window.storage.get === 'function';
-
-  // ---- SWAPPABLE ADAPTER (the one seam Supabase replaces) ------------------
-  const localAdapter = {
-    name: 'localStorage',
-    async get(k)      { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : null; } catch { return null; } },
-    async set(k, v)   { try { localStorage.setItem(k, JSON.stringify(v)); return true; } catch { return false; } },
-    async remove(k)   { try { localStorage.removeItem(k); } catch {} },
-    async keys()      { try { return Object.keys(localStorage).filter(x => x.startsWith(PREFIX)); } catch { return []; } }
-  };
-  const artifactAdapter = {
-    name: 'artifact',
-    async get(k)      { try { const r = await window.storage.get(k); return r ? JSON.parse(r.value) : null; } catch { return null; } },
-    async set(k, v)   { try { await window.storage.set(k, JSON.stringify(v)); return true; } catch { return false; } },
-    async remove(k)   { try { await window.storage.delete(k); } catch {} },
-    async keys()      { return []; }
-  };
-
-  // ---- SUPABASE ADAPTER (optional cloud sync; same interface as localAdapter) ----
-  // Business-ops state only. apiKey + agentThreads NEVER sync (secret / free-text).
-  const CFG = (window.NTN && window.NTN.config) || {};
-  const WS  = CFG.WORKSPACE_ID || 'default';
-  const KEY_TABLE = {
-    tasks:'tasks', decisions:'decisions', serviceState:'service_lines',
-    capMap:'gates', layer0:'gates', checklist:'capital', ganttState:'capital', finModel:'financial_inputs', snapshots:'snapshots'
-  };
-  const LOCAL_ONLY = ['apiKey','agentThreads'];
-  const bare = (k) => k.startsWith(PREFIX) ? k.slice(PREFIX.length) : k;
-
-  let sb: any = null;                       // supabase client (null until configured)
-  let syncStatus = 'local';            // local | connecting | connected | offline | error
-  const syncListeners = new Set<any>();
-  function setSync(s){ if (s !== syncStatus){ syncStatus = s; syncListeners.forEach(f => { try { f(s); } catch {} }); } }
-  function currentSync(){ return syncStatus; }
-  function subscribeSync(cb){ syncListeners.add(cb); return () => syncListeners.delete(cb); }
-
-  const supabaseAdapter = {
-    name: 'supabase',
-    async get(k) {
-      const key = bare(k);
-      if (LOCAL_ONLY.includes(key) || !KEY_TABLE[key] || !sb) return localAdapter.get(k);
-      try {
-        const { data, error } = await sb.from(KEY_TABLE[key]).select('data').eq('workspace_id', WS).eq('key', key).maybeSingle();
-        if (error) throw error;
-        setSync('connected');
-        if (data) { await localAdapter.set(k, data.data); return data.data; }  // mirror to local cache
-        return localAdapter.get(k);                                            // not in cloud yet → local
-      } catch (e) { setSync('offline'); return localAdapter.get(k); }          // never crash
-    },
-    async set(k, v) {
-      const key = bare(k);
-      await localAdapter.set(k, v);                                            // always keep a local mirror
-      if (LOCAL_ONLY.includes(key) || !KEY_TABLE[key] || !sb) return true;
-      try {
-        const { error } = await sb.from(KEY_TABLE[key])
-          .upsert({ workspace_id: WS, key, data: v, updated_at: new Date().toISOString() }, { onConflict: 'workspace_id,key' });
-        if (error) throw error;
-        setSync('connected'); return true;
-      } catch (e) { setSync('offline'); return true; }                         // local already has it
-    },
-    async remove(k) {
-      const key = bare(k);
-      await localAdapter.remove(k);
-      if (LOCAL_ONLY.includes(key) || !KEY_TABLE[key] || !sb) return;
-      try { await sb.from(KEY_TABLE[key]).delete().eq('workspace_id', WS).eq('key', key); setSync('connected'); }
-      catch { setSync('offline'); }
-    },
-    async keys() { return localAdapter.keys(); }
-  };
-
-  function initSupabase() {
-    if (CFG.PERSISTENCE !== 'supabase') return false;
-    const url = CFG.SUPABASE_URL || '', anon = CFG.SUPABASE_ANON_KEY || '';
-    if (!url || !anon || url.indexOf('PUT_') === 0 || anon.indexOf('PUT_') === 0) return false;  // placeholders
-    if (!window.supabase || !window.supabase.createClient) return false;                          // CDN didn't load
-    try { sb = window.supabase.createClient(url, anon); return true; } catch { return false; }
-  }
-  async function ping() {
-    if (!sb) return;
-    try { const { error } = await sb.from('tasks').select('workspace_id').limit(1); if (error) throw error; setSync('connected'); }
-    catch { setSync('offline'); }
-  }
-
-  // Selection: Supabase if configured & reachable, else transparent local/artifact fallback.
-  let adapter;
-  if (initSupabase()) { adapter = supabaseAdapter; setSync('connecting'); ping(); }
-  else { adapter = hasArtifact ? artifactAdapter : localAdapter; setSync('local'); }
-  function useAdapter(a) { adapter = a; }           // <-- swap point (e.g. supabaseAdapter)
-  function currentAdapter() { return adapter.name; }
-
-  // ---- namespaced IO -------------------------------------------------------
-  const KEYS = ['checklist','tasks','decisions','serviceState','ganttState','apiKey','agentThreads','finModel','capMap','layer0','snapshots','finScenarios'];
-  async function get(key)        { return adapter.get(PREFIX + key); }
-  async function set(key, value) { return adapter.set(PREFIX + key, value); }
-  async function remove(key)     { return adapter.remove(PREFIX + key); }
-
-  // ---- REGULATORY HARD-GATES (data; cleared-state = existing serviceState) --
-  // riskIdx points at SERVICE_LINES[id].blockingRisks[i] → key `${id}_risk_${i}`.
-  // Resolving that risk in the dossier clears the gate. No parallel copy.
-  const GATES = {
-    pgx:      [ {id:'baa',    label:'Lab partner BAA executed',            riskIdx:0},
-                {id:'order',  label:'Lab-ordering authority (MD/DO/NP/PA)', riskIdx:1},
-                {id:'consent',label:'Genetic-testing informed consent',     riskIdx:2} ],
-    spravato: [],   // REMS/DHCS/POS55/DEA centralized into Layer 0 (Build 5)
-
-    tms:      [ {id:'pos',    label:'POS structure (PMC/MSO) resolved',     riskIdx:2},
-                {id:'fda510k',label:'MagVenture 510(k) clearances on file', riskIdx:3} ],
-    art:      [],
-    sgb:      [ {id:'pos',    label:'POS 21/55 billing resolved',          riskIdx:1},   // CPoM → Layer 0 (Build 5)
-                {id:'scope',  label:'MD/DO scope confirmed',               riskIdx:2} ],
-    ketamine: [ {id:'anes',   label:'Contracted anesthesiologist secured', riskIdx:0},
-                {id:'pos55',  label:'POS 55 billing resolved',             riskIdx:1} ],
-    neuro:    [ {id:'incident',label:'"Incident to" supervision met',      riskIdx:1},
-                {id:'scope',  label:'Technician scope resolved',           riskIdx:2} ],
-    nad:      [ {id:'claims', label:'No-disease-claims policy enforced',   riskIdx:0},
-                {id:'olympia',label:'Olympia Pharmacy contract executed',  riskIdx:1} ],
-    peptides: [ {id:'fdamon', label:'FDA/PCAC weekly monitoring live',     riskIdx:0},
-                {id:'pharm',  label:'503A vs 503B sourcing decided',       riskIdx:1},
-                {id:'mktg',   label:'Marketing scope counsel review',      riskIdx:2} ],
-    hbot:     [ {id:'nfpa',   label:'NFPA 99 compliance verified',         riskIdx:0} ]
-  };
-  function gateStatus(lineId, serviceState) {
-    const gates = GATES[lineId] || [];
-    serviceState = serviceState || {};
-    const unmet = gates.filter(g => !serviceState[`${lineId}_risk_${g.riskIdx}`]);
-    return { status: unmet.length ? 'BLOCKED' : 'GO', unmet, total: gates.length, cleared: gates.length - unmet.length };
-  }
-
-  // ---- LAYER 0 · LEGAL & ENTITY SPINE (shared gates that gate everything above) --
-  // First-class gate objects: name, owner, status (in `layer0` store), external sign-off.
-  // STATUS TRACKING ONLY — records whether a sign-off exists, asserts nothing about
-  // compliance and gives no legal advice.
-  const LAYER0 = [
-    { id:'entity',      name:'Entity / PC structure + MSO/MSA agreement',          owner:'Healthcare Attorney', dependsOn:'Healthcare attorney' },
-    { id:'cpom',        name:'Corporate-practice-of-medicine compliance opinion',  owner:'Healthcare Attorney', dependsOn:'Healthcare counsel' },
-    { id:'dea',         name:'Per-site DEA registration',                          owner:'Medical Director',    dependsOn:'DEA' },
-    { id:'rems',        name:'REMS certification (Inpatient Healthcare Setting enrollment)', owner:'Compliance', dependsOn:'Janssen REMS' },
-    { id:'dhcs',        name:'DHCS plan-of-operation amendment',                   owner:'Compliance/Legal',    dependsOn:'CMS / DHCS' },
-    { id:'pos55',       name:'POS 55 billing opinion',                             owner:'CA Healthcare Counsel', dependsOn:'Healthcare counsel' },
-    { id:'malpractice', name:'Malpractice / professional liability coverage',      owner:'Operations',          dependsOn:'Insurer' }
-  ];
-  // Each service line → the Layer 0 gates it requires (seeded from the dossiers).
-  const LINE_L0_DEPS = {
-    pgx:      ['entity','malpractice'],
-    spravato: ['entity','malpractice','rems','dhcs','dea','pos55'],
-    tms:      ['entity','malpractice'],
-    art:      ['entity','malpractice'],
-    sgb:      ['entity','malpractice','cpom'],
-    ketamine: ['entity','malpractice','dea','cpom'],
-    neuro:    ['entity','malpractice'],
-    nad:      ['entity','malpractice'],
-    peptides: ['entity','malpractice'],
-    hbot:     ['entity','malpractice']
-  };
-  function l0StatusOf(id, layer0) { return (layer0 && layer0[id] && layer0[id].status) || 'not-started'; }
-  function unmetL0(lineId, layer0) {
-    return (LINE_L0_DEPS[lineId] || [])
-      .filter(id => l0StatusOf(id, layer0) !== 'done')
-      .map(id => { const g = LAYER0.find(x => x.id === id); return { id, label: g ? g.name : id }; });
-  }
-  // Combined GO: a line is GO only if its Build-1 per-line gates AND all required
-  // Layer 0 gates are clear. Layer 0 changes recompute every line live.
-  function lineStatus(lineId, serviceState, layer0) {
-    const g = gateStatus(lineId, serviceState);
-    const l0 = unmetL0(lineId, layer0);
-    const total = g.total + (LINE_L0_DEPS[lineId] || []).length;
-    const unmet = [
-      ...g.unmet.map(u => ({ source: 'line',   label: u.label })),
-      ...l0.map(u =>      ({ source: 'layer0', label: u.label }))
-    ];
-    return { status: unmet.length ? 'BLOCKED' : 'GO', unmet, lineUnmet: g.unmet, l0Unmet: l0, total, cleared: total - unmet.length };
-  }
-  // Critical path: unmet Layer 0 gates ranked by how many service lines each unblocks.
-  function criticalPath(layer0) {
-    return LAYER0
-      .filter(g => l0StatusOf(g.id, layer0) !== 'done')
-      .map(g => {
-        const lines = Object.keys(LINE_L0_DEPS).filter(l => LINE_L0_DEPS[l].includes(g.id));
-        return { ...g, status: l0StatusOf(g.id, layer0), downstream: lines.length, lines };
-      })
-      .sort((a, b) => b.downstream - a.downstream);
-  }
-  // The decider: the platform collapses to ONE next move. Two universal gates
-  // (entity + malpractice) block every line; until they clear, nothing else is
-  // the move. Then prove the loop with a single line before opening any other.
-  const WAVE1 = ['pgx', 'spravato', 'tms'];   // Cole's launch set — three lines, three clocks
-  function wayThrough(layer0, serviceState) {
-    const universal = ['entity', 'malpractice'].map(id => ({ id, gate: LAYER0.find(g => g.id === id), status: l0StatusOf(id, layer0) }));
-    const unmet = universal.filter(u => u.status !== 'done');
-    const SL = typeof SERVICE_LINES !== 'undefined' ? SERVICE_LINES : [];
-    const lines = WAVE1.map(id => ({ id, sl: SL.find(s => s.id === id), status: lineStatus(id, serviceState, layer0) }));
-    const live = lines.filter(l => l.status.status === 'GO').length;
-    if (unmet.length) return { phase: 'clear-spine', universal, unmet, launch: WAVE1, lines, live };
-    if (live < WAVE1.length) return { phase: 'launch-wave1', universal, unmet: [], launch: WAVE1, lines, live };
-    return { phase: 'scale', universal, unmet: [], launch: WAVE1, lines, live };
-  }
-
-  // ---- derived counters (one formula, shared) ------------------------------
-  function tasksLive(tasks) { return (tasks || []).filter(t => t.status === 'in_progress').length; }
-  function committedCapital(checklist, items?) {
-    items = items || (typeof CRITICAL_PATH_14 !== 'undefined' ? CRITICAL_PATH_14 : []);
-    checklist = checklist || {};
-    return items.reduce((s, p, i) => s + (checklist[`cp14_${i}`] ? (p.cost || 0) : 0), 0);
-  }
-
-  // ---- DRIVER-BASED FINANCIAL MODEL (bottoms-up; replaces hardcoded headline)
-  // Seeded so the lines sum to the dossier total ($820,540/mo, $9.85M, 52.3% GM,
-  // $1.74M labor) INCLUDING validation corrections (PGx 81226 ≈ $428, not $85-150).
-  // rate = per-encounter; effRev = mix·payer·PA + (1-mix)·cash; monthly = vol·effRev.
-  // gm = 1 - directCostPct (COGS only; labor tracked separately). rampMonths shapes
-  // the trajectory, not the fully-ramped M12 figure. All fields are editable.
-  const FIN_DRIVERS = {
-    pgx:      { payerRate:428,  cashRate:349, payerMixPct:0.55, volume:169.0,  paApprovalPct:0.70, rampMonths:2, fte:0.75, fteAnnualCost:96400, directCostPct:0.80 },
-    spravato: { payerRate:1100, cashRate:900, payerMixPct:0.95, volume:349.1,  paApprovalPct:0.75, rampMonths:3, fte:3.7,  fteAnnualCost:96400, directCostPct:0.53 },
-    tms:      { payerRate:300,  cashRate:250, payerMixPct:0.92, volume:1291.5, paApprovalPct:0.80, rampMonths:4, fte:2.9,  fteAnnualCost:96400, directCostPct:0.40 },
-    art:      { payerRate:150,  cashRate:120, payerMixPct:0.85, volume:126.6,  paApprovalPct:0.85, rampMonths:2, fte:1.35, fteAnnualCost:96400, directCostPct:0.30 },
-    sgb:      { payerRate:900,  cashRate:950, payerMixPct:0.40, volume:19.5,   paApprovalPct:0.70, rampMonths:2, fte:0.55, fteAnnualCost:96400, directCostPct:0.45 },
-    ketamine: { payerRate:600,  cashRate:650, payerMixPct:0.15, volume:76.8,   paApprovalPct:0.30, rampMonths:3, fte:2.5,  fteAnnualCost:96400, directCostPct:0.55 },
-    neuro:    { payerRate:120,  cashRate:150, payerMixPct:0.10, volume:228.9,  paApprovalPct:0.40, rampMonths:4, fte:1.7,  fteAnnualCost:96400, directCostPct:0.40 },
-    nad:      { payerRate:750,  cashRate:750, payerMixPct:0.00, volume:22.4,   paApprovalPct:1.00, rampMonths:2, fte:1.45, fteAnnualCost:96400, directCostPct:0.35 },
-    peptides: { payerRate:550,  cashRate:550, payerMixPct:0.00, volume:40.91,  paApprovalPct:1.00, rampMonths:3, fte:1.55, fteAnnualCost:96400, directCostPct:0.30 },
-    hbot:     { payerRate:300,  cashRate:300, payerMixPct:0.00, volume:60.0,   paApprovalPct:1.00, rampMonths:4, fte:1.65, fteAnnualCost:96400, directCostPct:0.45 }
-  };
-  function lineMonthly(d) {
-    const effRev = d.payerMixPct * d.payerRate * d.paApprovalPct + (1 - d.payerMixPct) * d.cashRate;
-    return { effRev, monthly: d.volume * effRev };
-  }
-  function financials(drivers) {
-    drivers = drivers || FIN_DRIVERS;
-    const lines = Object.keys(drivers).map(id => {
-      const d = drivers[id];
-      const { effRev, monthly } = lineMonthly(d);
-      const gm = 1 - d.directCostPct;
-      return { id, effRev, monthly, annual: monthly * 12, gm, labor: d.fte * d.fteAnnualCost };
-    });
-    const m12Monthly  = lines.reduce((s, l) => s + l.monthly, 0);
-    const grossDollars = lines.reduce((s, l) => s + l.monthly * l.gm, 0);
-    const annualLabor = lines.reduce((s, l) => s + l.labor, 0);
-    return {
-      lines,
-      byId: Object.fromEntries(lines.map(l => [l.id, l])),
-      m12Monthly,
-      annualized: m12Monthly * 12,
-      blendedGM: m12Monthly > 0 ? grossDollars / m12Monthly : 0,
-      annualLabor
-    };
-  }
-
-  // ---- WEEKLY SNAPSHOT / CHANGELOG (append-only; business-ops metrics, zero PHI) --
-  function isoWeek(d) {
-    const date = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
-    const day = date.getUTCDay() || 7;
-    date.setUTCDate(date.getUTCDate() + 4 - day);
-    const yearStart = new Date(Date.UTC(date.getUTCFullYear(), 0, 1));
-    const week = Math.ceil((((+date - +yearStart) / 86400000) + 1) / 7);
-    return `${date.getUTCFullYear()}-W${String(week).padStart(2, '0')}`;
-  }
-  function snapshotMetrics(s) {
-    s = s || {};
-    const checklist = s.checklist || {}, finModel = s.finModel || FIN_DRIVERS;
-    const serviceState = s.serviceState || {}, layer0 = s.layer0 || {}, decisions = s.decisions || {};
-    const fin = financials(finModel);
-    const SL = typeof SERVICE_LINES !== 'undefined' ? SERVICE_LINES : [];
-    const lineStatuses = {}; let linesGo = 0, linesBlocked = 0;
-    SL.forEach(sl => { const st = lineStatus(sl.id, serviceState, layer0).status; lineStatuses[sl.id] = st; st === 'GO' ? linesGo++ : linesBlocked++; });
-    const l0Statuses = {}; let l0Cleared = 0;
-    LAYER0.forEach(g => { const st = l0StatusOf(g.id, layer0); l0Statuses[g.id] = st; if (st === 'done') l0Cleared++; });
-    const cp14 = typeof CRITICAL_PATH_14 !== 'undefined' ? CRITICAL_PATH_14 : [];
-    const checklistDone = cp14.filter((_, i) => checklist[`cp14_${i}`]).length;
-    const od = typeof OPEN_DECISIONS !== 'undefined' ? OPEN_DECISIONS : [];
-    const decisionsResolved = Object.keys(decisions).length;
-    return {
-      committedCapital: committedCapital(checklist),
-      m12Monthly: fin.m12Monthly, blendedGM: fin.blendedGM, annualLabor: fin.annualLabor,
-      linesGo, linesBlocked, lineStatuses,
-      l0Cleared, l0Total: LAYER0.length, l0Statuses,
-      checklistDone, checklistTotal: cp14.length, checklistPct: cp14.length ? (checklistDone / cp14.length) * 100 : 0,
-      decisionsResolved, decisionsPending: Math.max(0, od.length - decisionsResolved)
-    };
-  }
-  function makeSnapshot(state, auto) {
-    const now = new Date();
-    return { id: `snap_${now.getTime()}`, ts: now.toISOString(), isoWeek: isoWeek(now), auto: !!auto, metrics: snapshotMetrics(state) };
-  }
-
-  // ---- JSON export / import (survives a cache-clear) -----------------------
-  async function exportAll() {
-    const out = { _meta: { app: 'ntn-nouveau', exportedAt: new Date().toISOString(), adapter: adapter.name } };
-    for (const k of KEYS) out[k] = await get(k);
-    return out;
-  }
-  async function importAll(obj) {
-    if (!obj || typeof obj !== 'object') throw new Error('Invalid state file');
-    for (const k of KEYS) if (k in obj && obj[k] !== undefined && obj[k] !== null) await set(k, obj[k]);
-    return true;
-  }
-
-  return { PREFIX, KEYS, get, set, remove, useAdapter, currentAdapter, currentSync, subscribeSync, GATES, gateStatus, LAYER0, LINE_L0_DEPS, l0StatusOf, unmetL0, lineStatus, criticalPath, wayThrough, tasksLive, committedCapital, FIN_DRIVERS, financials, isoWeek, snapshotMetrics, makeSnapshot, exportAll, importAll };
-})();
-
-// Back-compat alias so existing references keep working.
-const Store = NTN.engine;
-
-// Custom hook: persisted state
-function usePersistedState(key, defaultValue) {
-  const [value, setValue] = useState(defaultValue);
-  const [loaded, setLoaded] = useState(false);
-  useEffect(() => {
-    let mounted = true;
-    NTN.engine.get(key).then(v => {
-      if (mounted) { if (v !== null && v !== undefined) setValue(v); setLoaded(true); }
-    });
-    return () => { mounted = false; };
-  }, [key]);
-  useEffect(() => { if (loaded) NTN.engine.set(key, value); }, [key, value, loaded]);
-  return [value, setValue, loaded];
-}
+NTN.engine = {
+  PREFIX: storage.STORAGE_PREFIX,
+  SCHEMA_VERSION: storage.SCHEMA_VERSION,
+  KEYS: storage.KEYS,
+  get: storage.get,
+  set: storage.set,
+  remove: storage.remove,
+  useAdapter: storage.useAdapter,
+  currentAdapter: storage.currentAdapter,
+  currentSync: storage.currentSync,
+  subscribeSync: storage.subscribeSync,
+  exportAll: storage.exportAll,
+  importAll: storage.importAll,
+  GATES: engine.GATES,
+  gateStatus: engine.gateStatus,
+  LAYER0: engine.LAYER0,
+  LINE_L0_DEPS: engine.LINE_L0_DEPS,
+  l0StatusOf: engine.l0StatusOf,
+  unmetL0: engine.unmetL0,
+  lineStatus: engine.lineStatus,
+  criticalPath: engine.criticalPath,
+  wayThrough: engine.wayThrough,
+  tasksLive: engine.tasksLive,
+  committedCapital: engine.committedCapital,
+  FIN_DRIVERS: engine.FIN_DRIVERS,
+  lineMonthly: engine.lineMonthly,
+  financials: engine.financials,
+  isoWeek: engine.isoWeek,
+  snapshotMetrics: engine.snapshotMetrics,
+  makeSnapshot: engine.makeSnapshot,
+  taskFromCriticalPath: engine.taskFromCriticalPath,
+  taskFromBlockingRisk: engine.taskFromBlockingRisk,
+  taskFromDecision: engine.taskFromDecision,
+};
 
 // ===========================================================================
 // PLATFORM DATA — derived from NTN_Nouveau_COMPLETE_PLATFORM.docx
