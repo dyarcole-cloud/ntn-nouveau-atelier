@@ -1,0 +1,36 @@
+functionsDirectory = "C:\\Users\\ColeDyar\\netlify\\functions"
+functionsDirectoryOrigin = "default"
+headersOrigin = "config"
+plugins = []
+redirects = []
+
+[build]
+publish = "C:\\Users\\ColeDyar"
+publishOrigin = "config"
+functions = "C:\\Users\\ColeDyar\\netlify\\functions"
+
+  [build.environment]
+
+  [build.processing]
+
+    [build.processing.css]
+
+    [build.processing.html]
+
+    [build.processing.images]
+
+    [build.processing.js]
+
+  [build.services]
+
+[functions]
+
+  [functions."*"]
+
+[[headers]]
+for = "/*"
+
+  [headers.values]
+  X-Frame-Options = "DENY"
+  X-Content-Type-Options = "nosniff"
+  Referrer-Policy = "strict-origin-when-cross-origin"

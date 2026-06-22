@@ -1,0 +1,40 @@
+{
+  "name": "NTN Nouveau — Live Execution OS",
+  "short_name": "Nouveau",
+  "description": "Live command center for the 10-line interventional psychiatry platform",
+  "start_url": "/",
+  "scope": "/",
+  "id": "/",
+  "display": "standalone",
+  "display_override": ["standalone", "minimal-ui"],
+  "orientation": "any",
+  "background_color": "#000000",
+  "theme_color": "#000000",
+  "categories": ["productivity", "business", "medical"],
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-maskable.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "maskable"
+    },
+    {
+      "src": "/apple-touch-icon.svg",
+      "sizes": "180x180",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ],
+  "shortcuts": [
+    { "name": "Command Brief", "short_name": "Brief", "url": "/?tab=command" },
+    { "name": "Tasks", "short_name": "Tasks", "url": "/?tab=tasks" },
+    { "name": "Decisions", "short_name": "Decisions", "url": "/?tab=decisions" },
+    { "name": "Agents", "short_name": "Agents", "url": "/?tab=agent" }
+  ]
+}
