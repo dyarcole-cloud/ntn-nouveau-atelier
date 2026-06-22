@@ -11,6 +11,7 @@ import { CAPITAL_BY_MONTH, REVENUE_TRAJECTORY } from './data/capital';
 import * as engine from './lib/engine';
 import * as storage from './lib/storage';
 import { usePersistedState } from './lib/storage';
+import WayThroughPanel from './components/WayThroughPanel';
 // NOTE: the body below keeps its original `const { useState, ... } = React`
 // destructure (faithful port). React default import satisfies it.
 
@@ -2951,7 +2952,12 @@ function App() {
         <main className="app-main flex-1 px-4 md:px-6 py-4 md:py-6 space-y-5 md:space-y-6 min-w-0">
           <KPIStrip checklistProgress={checklistProgress} taskStats={taskStats} decisionStats={decisionStats} fin={fin}/>
 
-          {activeTab === 'command' && <CommandBrief checklist={checklist} setChecklist={setChecklist} tasks={tasks} setTasks={setTasks} serviceState={serviceState} layer0={layer0} setLayer0={setLayer0} fin={fin} setActiveTab={goZone} setSelection={setSelection} setActiveLine={setActiveLine}/>}
+          {activeTab === 'command' && (
+            <div className="space-y-6">
+              <WayThroughPanel layer0={layer0} serviceState={serviceState} fin={fin} setActiveTab={goZone} setActiveLine={setActiveLine}/>
+              <CommandBrief checklist={checklist} setChecklist={setChecklist} tasks={tasks} setTasks={setTasks} serviceState={serviceState} layer0={layer0} setLayer0={setLayer0} fin={fin} setActiveTab={goZone} setSelection={setSelection} setActiveLine={setActiveLine}/>
+            </div>
+          )}
           {activeTab === 'lines' && <ServiceLines serviceState={serviceState} setServiceState={setServiceState} tasks={tasks} setTasks={setTasks} layer0={layer0} setSelection={setSelection} activeLine={activeLine}/>}
           {activeTab === 'spine' && <CapabilityMap capMap={capMap} setCapMap={setCapMap} layer0={layer0} setLayer0={setLayer0} serviceState={serviceState} setActiveTab={goZone}/>}
           {activeTab === 'capital' && <CapitalView finModel={finModel} setFinModel={setFinModel} fin={fin} activeLine={activeLine} finScenarios={finScenarios} setFinScenarios={setFinScenarios}/>}
