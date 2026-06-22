@@ -2422,13 +2422,18 @@ function Sidebar({ tabs, activeTab, setActiveTab, taskStats, decisionStats, chec
         </button>
       </div>
       <nav className="flex-1 py-3 overflow-y-auto">
-        {tabs.map(t => (
-          <div key={t.id} className={`nav-item ${activeTab===t.id?'active':''}`} onClick={() => setActiveTab(t.id)}>
-            <span className="icon text-[14px]">{t.icon}</span>
-            <span className="flex-1">{t.label}</span>
-            {t.id==='execution' && taskStats.inProgress>0 && <span className="chip chip-data">{taskStats.inProgress}</span>}
-            {t.id==='execution' && decisionStats.pending>0 && <span className="chip chip-warn">{decisionStats.pending}</span>}
-            {t.id==='command' && checklistDone>0 && <span className="chip chip-pos">{checklistDone}/{checklistTotal}</span>}
+        {([...new Set(tabs.map((t:any) => t.group || ''))] as string[]).map((group: string) => (
+          <div key={group || 'ungrouped'}>
+            {group && <div className="px-5 pt-3 pb-1 text-[9px] uppercase tracking-[0.22em] mono" style={{color:'var(--faint)'}}>{group}</div>}
+            {tabs.filter((t:any) => (t.group || '') === group).map((t:any) => (
+              <div key={t.id} className={`nav-item ${activeTab===t.id?'active':''}`} onClick={() => setActiveTab(t.id)}>
+                <span className="icon text-[14px]">{t.icon}</span>
+                <span className="flex-1">{t.label}</span>
+                {t.id==='execution' && taskStats.inProgress>0 && <span className="chip chip-data">{taskStats.inProgress}</span>}
+                {t.id==='execution' && decisionStats.pending>0 && <span className="chip chip-warn">{decisionStats.pending}</span>}
+                {t.id==='command' && checklistDone>0 && <span className="chip chip-pos">{checklistDone}/{checklistTotal}</span>}
+              </div>
+            ))}
           </div>
         ))}
       </nav>
@@ -2869,15 +2874,19 @@ function App() {
     resolved: Object.keys(decisions).length
   };
 
+  // ZONES MANIFEST — the 8 zones grouped into 5 OS surfaces. Every zone keeps its
+  // id (so TAB_TO_ZONE deep-links + the lens are untouched); the group only drives
+  // the sidebar's section headers, so the app reads as one OS, not eight dashboards.
+  // (Scenarios live inside Capital/Model; Source Registry inside Clinical/Evidence.)
   const tabs = [
-    { id:'command',      label:'Command',      icon:'◉' },
-    { id:'lines',        label:'Lines',        icon:'◇' },
-    { id:'clinical',     label:'Clinical',     icon:'⊕' },
-    { id:'spine',        label:'Spine',        icon:'▦' },
-    { id:'capital',      label:'Capital',      icon:'◈' },
-    { id:'staffing',     label:'Staffing',     icon:'◆' },
-    { id:'execution',    label:'Execution',    icon:'☑' },
-    { id:'intelligence', label:'Intelligence', icon:'◢' },
+    { id:'command',      label:'Command',      icon:'◉', group:'Now' },
+    { id:'lines',        label:'Lines',        icon:'◇', group:'Build' },
+    { id:'spine',        label:'Spine',        icon:'▦', group:'Build' },
+    { id:'staffing',     label:'Staffing',     icon:'◆', group:'Build' },
+    { id:'execution',    label:'Execution',    icon:'☑', group:'Build' },
+    { id:'capital',      label:'Capital',      icon:'◈', group:'Model' },
+    { id:'clinical',     label:'Clinical',     icon:'⊕', group:'Evidence' },
+    { id:'intelligence', label:'Intelligence', icon:'◢', group:'Intelligence' },
   ];
 
   // Legacy tab ids (used by deep-links throughout the app) → new zone ids.
