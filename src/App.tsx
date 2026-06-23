@@ -145,7 +145,7 @@ const LINEAR = {
   }
 };
 
-function CommandBrief({ checklist, setChecklist, tasks, setTasks, serviceState, layer0, setLayer0, fin, setActiveTab, setSelection, setActiveLine, reviews }: any) {
+function CommandBrief({ checklist, setChecklist, tasks, setTasks, serviceState, layer0, setLayer0, fin, setActiveTab, setSelection, setActiveLine, reviews, showLinear }: any) {
   const goLines = SERVICE_LINES.filter(sl => NTN.engine.lineStatus(sl.id, serviceState, layer0).status === 'GO').length;
   const way = NTN.engine.wayThrough(layer0, serviceState);
   const markL0Done = (id) => setLayer0 && setLayer0({ ...layer0, [id]: { ...(layer0[id] || {}), status: 'done' } });
@@ -175,7 +175,7 @@ function CommandBrief({ checklist, setChecklist, tasks, setTasks, serviceState, 
         <div className="top-accent-bar absolute top-0 left-0 right-0"/>
         <div className="flex items-center justify-between gap-3 flex-wrap mb-3">
           <div className="eyebrow"><span style={{color: way.phase==='scale' ? 'var(--pos)' : 'var(--crit)'}}>The Way Through · Wave 1</span></div>
-          <a href={LINEAR.project} target="_blank" rel="noopener" className="text-[11px] mono px-2.5 py-1 rounded-md transition hover:bg-[var(--surface)]" style={{color:'var(--dim)', border:'1px solid var(--border)'}}>tracked in Linear ↗</a>
+          {showLinear && <a href={LINEAR.project} target="_blank" rel="noopener" className="text-[11px] mono px-2.5 py-1 rounded-md transition hover:bg-[var(--surface)]" style={{color:'var(--dim)', border:'1px solid var(--border)'}}>tracked in Linear ↗</a>}
         </div>
 
         <h2 className="serif text-4xl md:text-5xl leading-[1.05]" style={{color:'var(--ink-bright)'}}>Command Brief</h2>
@@ -209,15 +209,19 @@ function CommandBrief({ checklist, setChecklist, tasks, setTasks, serviceState, 
             const isCrit = id === 'spravato';
             const go = status.status === 'GO';
             const pole = id === 'pgx' ? 'fast dollar · Wk 2' : id === 'spravato' ? 'REGULATORY LONG POLE · Wk 10' : 'capex long pole · Wk 12–14';
+            // Admin-gated: links out to Linear only when admin mode is on; otherwise
+            // the same status card renders as a plain div with no issue id / ↗.
+            const Wrap: any = showLinear ? 'a' : 'div';
+            const wrapProps: any = showLinear ? { href: LINEAR.lines[id], target: '_blank', rel: 'noopener' } : {};
             return (
-              <a key={id} href={LINEAR.lines[id]} target="_blank" rel="noopener" className="block rounded-xl p-3.5 transition hover:opacity-90" style={{background:'var(--inset)', border:'1px solid var(--border)', borderLeft:`3px solid ${go ? 'var(--pos)' : (isCrit ? 'var(--crit)' : (sl ? sl.color : 'var(--border)'))}`}}>
+              <Wrap key={id} {...wrapProps} className="block rounded-xl p-3.5 transition hover:opacity-90" style={{background:'var(--inset)', border:'1px solid var(--border)', borderLeft:`3px solid ${go ? 'var(--pos)' : (isCrit ? 'var(--crit)' : (sl ? sl.color : 'var(--border)'))}`}}>
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-[13px] font-semibold" style={{color:'var(--ink-bright)'}}>{sl ? sl.short : id}</span>
                   <span className="text-[9px] uppercase tracking-wider mono px-1.5 py-0.5 rounded" style={go ? {color:'var(--pos)', background:'rgba(52,211,153,0.10)'} : {color:'var(--crit)', background:'rgba(244,63,94,0.10)'}}>{go ? 'GO' : `${status.unmet.length} left`}</span>
                 </div>
                 <div className="text-[10.5px] mono mt-1.5" style={{color: isCrit && !go ? 'var(--crit)' : 'var(--muted)'}}>{pole}</div>
-                <div className="text-[10px] mono mt-1" style={{color:'var(--faint)'}}>{LINEAR.ids[id]} ↗</div>
-              </a>
+                {showLinear && <div className="text-[10px] mono mt-1" style={{color:'var(--faint)'}}>{LINEAR.ids[id]} ↗</div>}
+              </Wrap>
             );
           })}
         </div>
@@ -2239,7 +2243,7 @@ function ClinicalReferenceView({ setSelection, setActiveTab, reviews, setReviews
 // ============================================================
 // GUIDE · operator manual + live state snapshot
 // ============================================================
-function GuideView({ checklist, tasks, decisions, serviceState, setActiveTab }) {
+function GuideView({ checklist, tasks, decisions, serviceState, setActiveTab, showLinear, setShowLinear }: any) {
   const checkedDays = CRITICAL_PATH_14.filter((_, i) => checklist[`cp14_${i}`]);
   const checklistDone = checkedDays.length;
   const checklistTotal = CRITICAL_PATH_14.length;
@@ -2276,6 +2280,23 @@ function GuideView({ checklist, tasks, decisions, serviceState, setActiveTab }) 
         <p className="mt-5 max-w-2xl text-[14.5px] leading-[1.7]" style={{color:'var(--dim)'}}>
           This is a command center for the 10-service-line interventional psychiatry platform. State persists locally per browser. Every check, decision, and risk routes data into the Task Manager so nothing falls through. The four AI agents have the full platform brief loaded as system context.
         </p>
+      </div>
+
+      {/* Admin · device-local gate for personal integrations (default OFF → safe to present) */}
+      <div className="onyx-card p-5 flex items-center justify-between gap-4 flex-wrap">
+        <div className="min-w-0">
+          <div className="eyebrow mb-1"><span>Admin · Private Integrations</span></div>
+          <p className="text-[12.5px] leading-relaxed" style={{color:'var(--dim)'}}>
+            Off by default so the app is safe to show externally. Turn on to reveal your <span style={{color:'var(--ink-bright)'}}>Linear</span> links (board + per-line issues) on the Command surface. This setting lives on this device only — it never appears in an export, and a fresh viewer always starts with it off. (Tip: <span className="mono" style={{color:'var(--data)'}}>?admin</span> in the URL flips it on too.)
+          </p>
+        </div>
+        <button onClick={() => setShowLinear && setShowLinear(!showLinear)} role="switch" aria-checked={!!showLinear}
+          aria-label="Toggle admin mode (Linear links)"
+          className="flex-shrink-0 flex items-center gap-2.5 mono text-[11px] uppercase tracking-wider px-3.5 py-2.5 rounded-lg transition"
+          style={{ background: showLinear ? 'var(--glow-soft)' : 'var(--surface)', color: showLinear ? 'var(--ember)' : 'var(--muted)', border: `1px solid ${showLinear ? 'var(--ember)' : 'var(--line-strong)'}` }}>
+          <span style={{ width:9, height:9, borderRadius:'50%', background: showLinear ? 'var(--ember)' : 'var(--faint)', boxShadow: showLinear ? '0 0 8px var(--ember)' : 'none' }}/>
+          Linear links · {showLinear ? 'ON' : 'OFF'}
+        </button>
       </div>
 
       {/* Live state · where you are right now */}
@@ -3062,6 +3083,22 @@ function App() {
   const [snapshots, setSnapshots, snapsLoaded] = usePersistedState('snapshots', []);
   const [finScenarios, setFinScenarios] = usePersistedState('finScenarios', []);
   const [sourceReviews, setSourceReviews] = usePersistedState('sourceReviews', {});
+  // Admin mode (device-local, default OFF) — gates personal integrations like the
+  // Linear links so the app is presentation-safe to show externally. Not in KEYS
+  // on purpose: it stays per-device and never travels in an export.
+  const [showLinear, setShowLinear, slLoaded] = usePersistedState('showLinear', false);
+  // ?admin (or ?admin=1) turns it on, ?admin=0 turns it off — gives a reliable
+  // "my version" bookmark without exposing a switch by default. Applied AFTER the
+  // persisted value loads (and once) so the async load can't clobber the override.
+  const adminApplied = useRef(false);
+  useEffect(() => {
+    if (!slLoaded || adminApplied.current) return;
+    adminApplied.current = true;
+    const p = new URLSearchParams(window.location.search);
+    if (!p.has('admin')) return;
+    const v = p.get('admin');
+    setShowLinear(!(v === '0' || v === 'false'));
+  }, [slLoaded]);
   const fin = NTN.engine.financials(finModel);
 
   // Agent writeback chokepoint. Agents PROPOSE actions; this applies a proposal
@@ -3216,7 +3253,7 @@ function App() {
           {activeTab === 'command' && (
             <div className="space-y-6">
               <WayThroughPanel layer0={layer0} serviceState={serviceState} fin={fin} setActiveTab={goZone} setActiveLine={setActiveLine}/>
-              <CommandBrief checklist={checklist} setChecklist={setChecklist} tasks={tasks} setTasks={setTasks} serviceState={serviceState} layer0={layer0} setLayer0={setLayer0} fin={fin} setActiveTab={goZone} setSelection={setSelection} setActiveLine={setActiveLine} reviews={sourceReviews}/>
+              <CommandBrief checklist={checklist} setChecklist={setChecklist} tasks={tasks} setTasks={setTasks} serviceState={serviceState} layer0={layer0} setLayer0={setLayer0} fin={fin} setActiveTab={goZone} setSelection={setSelection} setActiveLine={setActiveLine} reviews={sourceReviews} showLinear={showLinear}/>
             </div>
           )}
           {activeTab === 'lines' && <ServiceLines serviceState={serviceState} setServiceState={setServiceState} tasks={tasks} setTasks={setTasks} layer0={layer0} setSelection={setSelection} activeLine={activeLine} setActiveLine={setActiveLine}/>}
@@ -3249,7 +3286,7 @@ function App() {
             <div style={{display:'flex',justifyContent:'flex-end',padding:'8px 8px 0'}}>
               <button onClick={() => setGuideOpen(false)} className="mono text-[12px]" style={{color:'var(--muted)',border:'1px solid var(--line-strong)',borderRadius:7,padding:'6px 12px'}}>close ✕</button>
             </div>
-            <GuideView checklist={checklist} tasks={tasks} decisions={decisions} serviceState={serviceState} setActiveTab={(id)=>{ setGuideOpen(false); goZone(id); }}/>
+            <GuideView checklist={checklist} tasks={tasks} decisions={decisions} serviceState={serviceState} setActiveTab={(id)=>{ setGuideOpen(false); goZone(id); }} showLinear={showLinear} setShowLinear={setShowLinear}/>
           </div>
         </div>
       )}
