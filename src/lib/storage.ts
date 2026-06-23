@@ -113,7 +113,8 @@ export function useAdapter(a: any) { adapter = a; }
 export function currentAdapter() { return adapter.name; }
 
 // ---- namespaced IO ---------------------------------------------------------
-export const KEYS = ['checklist','tasks','decisions','serviceState','ganttState','agentThreads','finModel','capMap','layer0','snapshots','finScenarios'];
+// sourceReviews is local-only (not in KEY_TABLE) — governance metadata, like finScenarios.
+export const KEYS = ['checklist','tasks','decisions','serviceState','ganttState','agentThreads','finModel','capMap','layer0','snapshots','finScenarios','sourceReviews'];
 export async function get(key: string)        { return adapter.get(PREFIX + key); }
 export async function set(key: string, value: any) { return adapter.set(PREFIX + key, value); }
 export async function remove(key: string)     { return adapter.remove(PREFIX + key); }

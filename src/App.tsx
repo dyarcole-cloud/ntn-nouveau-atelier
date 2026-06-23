@@ -14,7 +14,7 @@ import { usePersistedState } from './lib/storage';
 import WayThroughPanel from './components/WayThroughPanel';
 import SourceBadge from './components/SourceBadge';
 import SourceRegistryView from './components/SourceRegistryView';
-import { clinicalSource, getSource } from './data/sourceRegistry';
+import { clinicalSource, getSource, reviewStatusOf } from './data/sourceRegistry';
 // NOTE: the body below keeps its original `const { useState, ... } = React`
 // destructure (faithful port). React default import satisfies it.
 
@@ -145,7 +145,7 @@ const LINEAR = {
   }
 };
 
-function CommandBrief({ checklist, setChecklist, tasks, setTasks, serviceState, layer0, setLayer0, fin, setActiveTab, setSelection, setActiveLine }) {
+function CommandBrief({ checklist, setChecklist, tasks, setTasks, serviceState, layer0, setLayer0, fin, setActiveTab, setSelection, setActiveLine, reviews }: any) {
   const goLines = SERVICE_LINES.filter(sl => NTN.engine.lineStatus(sl.id, serviceState, layer0).status === 'GO').length;
   const way = NTN.engine.wayThrough(layer0, serviceState);
   const markL0Done = (id) => setLayer0 && setLayer0({ ...layer0, [id]: { ...(layer0[id] || {}), status: 'done' } });
@@ -415,7 +415,7 @@ function CommandBrief({ checklist, setChecklist, tasks, setTasks, serviceState, 
                 <div className="flex items-center gap-2 mb-1 flex-wrap">
                   <span className="w-1 h-3.5 rounded-sm" style={{background:color}}/>
                   <div className="font-semibold text-[13px]" style={{color}}>{c.title}</div>
-                  {c.sourceId && <SourceBadge status={(getSource(c.sourceId) || {}).status} title={(getSource(c.sourceId) || {}).notes}/>}
+                  {c.sourceId && <SourceBadge status={reviewStatusOf(c.sourceId, reviews, (getSource(c.sourceId) || {}).status)} title={(getSource(c.sourceId) || {}).notes}/>}
                 </div>
                 <div className="text-[12.5px] mt-1 leading-relaxed pl-3" style={{color:'var(--dim)'}}>{c.body}</div>
               </div>
@@ -723,7 +723,7 @@ function CapabilityMap({ capMap, setCapMap, layer0, setLayer0, serviceState, set
 // ============================================================
 // SERVICE LINES TAB
 // ============================================================
-function ServiceLines({ serviceState, setServiceState, tasks, setTasks, layer0, activeLine }: any) {
+function ServiceLines({ serviceState, setServiceState, tasks, setTasks, layer0, activeLine, setActiveLine }: any) {
   const [filter, setFilter] = useState('all');
   const [expanded, setExpanded] = useState(activeLine && activeLine !== 'all' ? activeLine : null);
   const [focus, setFocus] = useState(false);
@@ -754,7 +754,7 @@ function ServiceLines({ serviceState, setServiceState, tasks, setTasks, layer0, 
       {activeLine && activeLine !== 'all' && (
         <div className="flex items-center justify-between gap-3 px-3.5 py-2.5 rounded-lg" style={{background:'var(--surface)', border:'1px solid var(--line-strong)', borderLeft:'3px solid var(--ember)'}}>
           <span className="mono text-[12px]" style={{color:'var(--ink-bright)'}}><span style={{color:'var(--ember)'}}>● lens</span> · scoped to {(SERVICE_LINES.find(s=>s.id===activeLine)||{}).name || activeLine}</span>
-          <span className="mono text-[11px]" style={{color:'var(--muted)'}}>change in the top bar ▾</span>
+          <button onClick={() => setActiveLine && setActiveLine('all')} className="mono text-[11px] flex items-center gap-1 flex-shrink-0" style={{color:'var(--ember)', border:'1px solid var(--ember)', borderRadius:6, padding:'4px 9px'}}>✕ clear lens</button>
         </div>
       )}
       {way.phase !== 'scale' && (
@@ -911,9 +911,120 @@ function ServiceLines({ serviceState, setServiceState, tasks, setTasks, layer0, 
 }
 
 // ============================================================
+// SCENARIO COMPARE — side-by-side diff of two financial driver models
+// (a saved scenario or the current live model). Recomputes both through the
+// pure engine; surfaces aggregate deltas, per-line monthly deltas, and which
+// driver inputs changed. Read-only — does not mutate the live model.
+// ============================================================
+const DRIVER_LABELS: Record<string, string> = {
+  payerRate: 'payer rate', cashRate: 'cash rate', payerMixPct: 'payer mix', volume: 'volume',
+  paApprovalPct: 'PA approval', rampMonths: 'ramp mo', fte: 'FTE', fteAnnualCost: 'FTE cost', directCostPct: 'direct cost',
+};
+function fmtDriver(k: string, v: number) {
+  if (v == null) return '—';
+  if (k === 'payerMixPct' || k === 'paApprovalPct' || k === 'directCostPct') return `${Math.round(v * 100)}%`;
+  if (k === 'payerRate' || k === 'cashRate' || k === 'fteAnnualCost') return `$${Math.round(v).toLocaleString()}`;
+  return `${v}`;
+}
+function Delta({ a, b, money, pct, inverse }: any) {
+  const d = (b || 0) - (a || 0);
+  if (Math.abs(d) < (pct ? 0.0005 : 0.5)) return <span className="mono text-[11px]" style={{ color: 'var(--faint)' }}>—</span>;
+  const good = inverse ? d < 0 : d > 0;
+  const color = good ? 'var(--go, var(--pos))' : 'var(--crit)';
+  const sign = d > 0 ? '+' : '−';
+  const mag = Math.abs(d);
+  const txt = pct ? `${(mag * 100).toFixed(1)}pts` : money ? `$${Math.round(mag).toLocaleString()}` : `${mag.toLocaleString()}`;
+  return <span className="mono text-[11px] font-semibold" style={{ color }}>{sign}{txt}</span>;
+}
+function ScenarioCompare({ finScenarios, finModel }: any) {
+  const list = finScenarios || [];
+  const [aKey, setAKey] = useState('');   // '' resolves to the newest scenario
+  const [bKey, setBKey] = useState('current');
+  if (list.length === 0) return null;
+  const opts = [{ key: 'current', label: 'Current live model', drivers: finModel }, ...list.map((s: any) => ({ key: s.id, label: s.name, drivers: s.drivers }))];
+  const resolvedA = (aKey && list.some((s: any) => s.id === aKey)) ? aKey : list[0].id;
+  const A = opts.find(o => o.key === resolvedA) || opts[0];
+  const B = opts.find(o => o.key === bKey) || opts[0];
+  const finA = NTN.engine.financials(A.drivers);
+  const finB = NTN.engine.financials(B.drivers);
+  const selStyle: any = { background: 'var(--inset)', color: 'var(--ink)', border: '1px solid var(--line-strong)', borderRadius: 6, padding: '4px 8px' };
+  const lineRows = SERVICE_LINES.map((sl: any) => ({ sl, a: (finA.byId[sl.id] || {}).monthly || 0, b: (finB.byId[sl.id] || {}).monthly || 0 }))
+    .sort((x, y) => Math.abs((y.b - y.a)) - Math.abs((x.b - x.a)));
+  const changedDrivers = (id: string) => {
+    const da = (A.drivers || {})[id] || {}, db = (B.drivers || {})[id] || {};
+    return Object.keys(DRIVER_LABELS).filter(k => da[k] !== db[k]).map(k => `${DRIVER_LABELS[k]} ${fmtDriver(k, da[k])}→${fmtDriver(k, db[k])}`);
+  };
+  const Totals = ({ label, a, b, money, pct, inverse }: any) => (
+    <div className="inset-bg rounded-lg p-3" style={{ border: '1px solid var(--line-strong)' }}>
+      <div className="mono text-[10px] uppercase tracking-wider mb-1" style={{ color: 'var(--muted)' }}>{label}</div>
+      <div className="flex items-baseline justify-between gap-2">
+        <span className="mono text-[12px]" style={{ color: 'var(--dim)' }}>{pct ? `${(a * 100).toFixed(1)}%` : money ? `$${Math.round(a).toLocaleString()}` : a}</span>
+        <span style={{ color: 'var(--faint)' }}>→</span>
+        <span className="mono text-[12px] font-semibold" style={{ color: 'var(--ink-bright)' }}>{pct ? `${(b * 100).toFixed(1)}%` : money ? `$${Math.round(b).toLocaleString()}` : b}</span>
+      </div>
+      <div className="text-right mt-0.5"><Delta a={a} b={b} money={money} pct={pct} inverse={inverse}/></div>
+    </div>
+  );
+  return (
+    <div className="glass rounded-3xl p-6 ring-rose">
+      <div className="mb-4">
+        <h3 className="serif text-3xl">Compare scenarios</h3>
+        <p className="text-[13px] mt-1" style={{ color: 'var(--muted)' }}>Diff any saved scenario against another — or against the current live model. Read-only.</p>
+      </div>
+      <div className="flex items-center gap-2 flex-wrap mb-4 mono text-[11px]">
+        <span style={{ color: 'var(--muted)' }}>A</span>
+        <select value={resolvedA} onChange={e => setAKey(e.target.value)} style={selStyle}>{opts.map(o => <option key={o.key} value={o.key}>{o.label}</option>)}</select>
+        <span style={{ color: 'var(--faint)' }}>vs</span>
+        <span style={{ color: 'var(--muted)' }}>B</span>
+        <select value={bKey} onChange={e => setBKey(e.target.value)} style={selStyle}>{opts.map(o => <option key={o.key} value={o.key}>{o.label}</option>)}</select>
+      </div>
+      {resolvedA === bKey ? (
+        <div className="text-[12px] mono" style={{ color: 'var(--faint)' }}>Pick two different scenarios to see the diff.</div>
+      ) : (
+        <>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mb-5">
+            <Totals label="M12 / mo" a={finA.m12Monthly} b={finB.m12Monthly} money/>
+            <Totals label="Annualized" a={finA.annualized} b={finB.annualized} money/>
+            <Totals label="Blended GM" a={finA.blendedGM} b={finB.blendedGM} pct/>
+            <Totals label="Annual labor" a={finA.annualLabor} b={finB.annualLabor} money inverse/>
+          </div>
+          <div className="overflow-x-auto -mx-2">
+            <table className="w-full text-[12px] min-w-[440px]">
+              <thead>
+                <tr style={{ borderBottom: '1px solid var(--line-strong)' }}>
+                  <th className="text-left py-2 px-3 mono uppercase tracking-wider text-[10px]" style={{ color: 'var(--muted)' }}>Line</th>
+                  <th className="text-right py-2 px-3 mono uppercase tracking-wider text-[10px]" style={{ color: 'var(--muted)' }}>A /mo</th>
+                  <th className="text-right py-2 px-3 mono uppercase tracking-wider text-[10px]" style={{ color: 'var(--muted)' }}>B /mo</th>
+                  <th className="text-right py-2 px-3 mono uppercase tracking-wider text-[10px]" style={{ color: 'var(--muted)' }}>Δ</th>
+                  <th className="text-left py-2 px-3 mono uppercase tracking-wider text-[10px]" style={{ color: 'var(--muted)' }}>Changed drivers</th>
+                </tr>
+              </thead>
+              <tbody>
+                {lineRows.map(({ sl, a, b }) => {
+                  const ch = changedDrivers(sl.id);
+                  return (
+                    <tr key={sl.id} style={{ borderBottom: '1px solid var(--border)' }}>
+                      <td className="py-2 px-3"><span className="inline-flex items-center gap-2"><span className="w-1.5 h-1.5 rounded-full" style={{ background: sl.color }}/>{sl.short}</span></td>
+                      <td className="py-2 px-3 mono text-right" style={{ color: 'var(--dim)' }}>${Math.round(a / 1000)}K</td>
+                      <td className="py-2 px-3 mono text-right" style={{ color: 'var(--ink-bright)' }}>${Math.round(b / 1000)}K</td>
+                      <td className="py-2 px-3 text-right"><Delta a={a} b={b} money/></td>
+                      <td className="py-2 px-3 mono text-[10.5px]" style={{ color: ch.length ? 'var(--dim)' : 'var(--faint)' }}>{ch.length ? ch.join(' · ') : '—'}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ============================================================
 // CAPITAL DEPLOYMENT TAB
 // ============================================================
-function CapitalView({ finModel, setFinModel, fin, activeLine, finScenarios, setFinScenarios }) {
+function CapitalView({ finModel, setFinModel, fin, activeLine, finScenarios, setFinScenarios, setActiveLine }: any) {
   const [scenario, setScenario] = useState('realistic');
 
   const totalCapital = useMemo(() => {
@@ -983,7 +1094,7 @@ function CapitalView({ finModel, setFinModel, fin, activeLine, finScenarios, set
           <div className="inset-bg rounded-xl p-3"><div className="text-[11px] uppercase tracking-wider text-[#71717A]">Blended GM</div><div className="mono text-2xl font-bold mt-1" style={{color:'var(--pos)'}}>{(((lensed ? lineGM : fin.blendedGM))*100).toFixed(1)}%</div></div>
           <div className="inset-bg rounded-xl p-3"><div className="text-[11px] uppercase tracking-wider text-[#71717A]">Annual Labor</div><div className="mono text-2xl font-bold mt-1" style={{color:'var(--ink-bright)'}}>${(((lensed ? lineLabor : fin.annualLabor))/1e6).toFixed(2)}M</div></div>
         </div>
-        {lensed && <div className="mono text-[11px] mb-4" style={{color:'var(--ember)'}}>● lens · figures scoped to {(SERVICE_LINES.find(s=>s.id===activeLine)||{}).name || activeLine}. The driver table below shows only this line.</div>}
+        {lensed && <div className="flex items-center gap-2 flex-wrap mb-4"><span className="mono text-[11px]" style={{color:'var(--ember)'}}>● lens · figures scoped to {(SERVICE_LINES.find(s=>s.id===activeLine)||{}).name || activeLine}. The driver table below shows only this line.</span><button onClick={() => setActiveLine && setActiveLine('all')} className="mono text-[11px] flex-shrink-0" style={{color:'var(--ember)', border:'1px solid var(--ember)', borderRadius:6, padding:'3px 8px'}}>✕ clear lens</button></div>}
 
         <div className="overflow-x-auto">
           <table className="w-full text-[11px] mono" style={{borderCollapse:'separate', borderSpacing:0}}>
@@ -1176,6 +1287,9 @@ function CapitalView({ finModel, setFinModel, fin, activeLine, finScenarios, set
               ))}
             </div>}
       </div>
+
+      {/* Scenario compare / diff */}
+      <ScenarioCompare finScenarios={finScenarios} finModel={finModel}/>
 
       {/* Combined platform P&L */}
       <div className="glass rounded-3xl p-6 ring-rose">
@@ -1688,11 +1802,12 @@ Cole is a peer. Skip preamble. Be specific about timelines and costs. Flag staff
   }
 ];
 
-function AgentConsole({ agentThreads, setAgentThreads, liveState }: any) {
+function AgentConsole({ agentThreads, setAgentThreads, liveState, applyAgentAction }: any) {
   const [activeAgent, setActiveAgent] = useState('orchestrator');
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const messagesEndRef = useRef<any>(null);
+  const appliedLock = useRef<Set<string>>(new Set());   // guards against double-apply on rapid clicks
 
   const currentThread = agentThreads[activeAgent] || [];
   const profile: any = AGENT_PROFILES.find(p => p.id === activeAgent);
@@ -1708,16 +1823,67 @@ function AgentConsole({ agentThreads, setAgentThreads, liveState }: any) {
     const cp = NTN.engine.criticalPath(ls.layer0).slice(0, 3);
     const fin = NTN.engine.financials(ls.finModel);
     const tasks = ls.tasks || [];
-    const resolved = Object.keys(ls.decisions || {}).length;
+    const resolvedIds = Object.keys(ls.decisions || {});
+    const pending = OPEN_DECISIONS.filter(d => !resolvedIds.includes(d.id)).slice(0, 12);
     return [
       `Way-through phase: ${way.phase} (Wave 1 live ${way.live}/${way.launch.length}).`,
       `Top blockers: ${cp.length ? cp.map((g: any) => `${g.name} [owner ${g.owner}, unlocks ${g.downstream} lines]`).join('; ') : 'none — spine clear'}.`,
-      `Layer 0: ${NTN.engine.LAYER0.map((g: any) => `${g.id}=${NTN.engine.l0StatusOf(g.id, ls.layer0)}`).join(', ')}.`,
-      `Decisions: ${Math.max(0, OPEN_DECISIONS.length - resolved)} pending of ${OPEN_DECISIONS.length}.`,
+      `Layer 0 gate ids+status: ${NTN.engine.LAYER0.map((g: any) => `${g.id}=${NTN.engine.l0StatusOf(g.id, ls.layer0)}`).join(', ')}.`,
+      `Decisions: ${Math.max(0, OPEN_DECISIONS.length - resolvedIds.length)} pending of ${OPEN_DECISIONS.length}.`,
+      `Pending decision ids (for record_decision): ${pending.length ? pending.map(d => `${d.id} "${String(d.q).slice(0, 60)}"`).join('; ') : 'none'}.`,
       `Active tasks: ${tasks.filter((t: any) => t.status === 'in_progress').length}.`,
       `Financials: $${Math.round(fin.m12Monthly).toLocaleString()}/mo, ${(fin.blendedGM * 100).toFixed(0)}% GM, $${Math.round(fin.annualLabor).toLocaleString()} labor.`,
       ls.activeLine && ls.activeLine !== 'all' ? `Active line lens: ${ls.activeLine}.` : `Line lens: all lines.`,
     ].join('\n');
+  };
+
+  // Apply / dismiss a single proposal carried on an assistant message, persisting
+  // its resolved state back into the thread so it survives reload.
+  const resolveProposal = (msgIdx: number, propIdx: number, action: 'apply' | 'dismiss') => {
+    const msg = (agentThreads[activeAgent] || [])[msgIdx];
+    const prop = msg && msg.proposals && msg.proposals[propIdx];
+    if (!prop || prop.state !== 'pending') return;
+    // Synchronous lock: a rapid double-click reads the same (stale) 'pending'
+    // state before the setAgentThreads re-render lands, which would otherwise
+    // apply the action twice. The ref blocks the second call immediately.
+    const lockKey = `${activeAgent}:${msgIdx}:${propIdx}`;
+    if (appliedLock.current.has(lockKey)) return;
+    appliedLock.current.add(lockKey);
+    let patch: any = { state: 'dismissed' };
+    if (action === 'apply') {
+      const res = applyAgentAction ? applyAgentAction(prop.name, prop.input, { agentName: profile.name }) : { ok: false, message: 'No action handler.' };
+      patch = { state: res.ok ? 'applied' : 'error', result: res.message };
+    }
+    setAgentThreads((prev: any) => {
+      const thread = [...(prev[activeAgent] || [])];
+      if (!thread[msgIdx]) return prev;
+      const m = { ...thread[msgIdx] };
+      const props = [...(m.proposals || [])];
+      if (!props[propIdx]) return prev;
+      props[propIdx] = { ...props[propIdx], ...patch };
+      m.proposals = props;
+      thread[msgIdx] = m;
+      return { ...prev, [activeAgent]: thread };
+    });
+  };
+
+  // Human-readable summary of a proposal for the confirm card.
+  const describeProposal = (p: any) => {
+    const i = p.input || {};
+    if (p.name === 'propose_task') return {
+      verb: 'Add task', detail: i.title,
+      chips: [i.owner, i.severity, i.dueDate && `due ${i.dueDate}`, i.linkedLineId && `line:${i.linkedLineId}`, i.linkedGateId && `gate:${i.linkedGateId}`, i.linkedDecisionId].filter(Boolean),
+    };
+    if (p.name === 'clear_layer0_gate') {
+      const g = NTN.engine.LAYER0.find((x: any) => x.id === i.gateId);
+      return { verb: 'Clear legal-spine gate', detail: g ? g.name : i.gateId, danger: true, chips: ['high-consequence · unblocks lines'] };
+    }
+    if (p.name === 'record_decision') {
+      const d = OPEN_DECISIONS.find(x => x.id === i.decisionId);
+      return { verb: 'Record decision', detail: `${i.decisionId} → ${i.choice}`, sub: d ? d.q : undefined, chips: [] as string[] };
+    }
+    if (p.name === 'save_scenario') return { verb: 'Save financial scenario', detail: i.name, chips: [] as string[] };
+    return { verb: p.name, detail: JSON.stringify(i), chips: [] as string[] };
   };
 
   const callAPI = async () => {
@@ -1744,7 +1910,10 @@ function AgentConsole({ agentThreads, setAgentThreads, liveState }: any) {
           : (data.message || `Proxy error ${response.status}`);
         throw new Error(msg);
       }
-      const assistantMsg = { role: 'assistant', content: data.text || '', ts: Date.now() };
+      const proposals = Array.isArray(data.proposals)
+        ? data.proposals.map((p: any) => ({ id: p.id, name: p.name, input: p.input || {}, state: 'pending' }))
+        : [];
+      const assistantMsg: any = { role: 'assistant', content: data.text || '', ts: Date.now(), proposals };
       setAgentThreads(prev => ({ ...prev, [activeAgent]: [...newThread, assistantMsg] }));
     } catch (e: any) {
       const errMsg = { role: 'assistant', content: `[${e.message}]`, ts: Date.now(), error: true };
@@ -1832,7 +2001,45 @@ function AgentConsole({ agentThreads, setAgentThreads, liveState }: any) {
                     </div>
                   ) : (
                     <div className="rounded-xl px-3.5 py-2.5 text-[13px] leading-relaxed whitespace-pre-wrap" style={{background:'var(--elevated)', border:'1px solid var(--border-strong)', color:'var(--ink)'}}>
-                      {m.content}
+                      {m.content || (m.proposals && m.proposals.length ? <span style={{color:'var(--muted)'}}>Proposed {m.proposals.length === 1 ? 'an action' : `${m.proposals.length} actions`} — review below.</span> : '')}
+                    </div>
+                  )}
+                  {m.role === 'assistant' && !m.error && m.proposals && m.proposals.length > 0 && (
+                    <div className="mt-2 space-y-2">
+                      <div className="mono text-[10px] uppercase tracking-[0.14em] flex items-center gap-1.5" style={{color:'var(--muted)'}}>
+                        <span style={{color:'var(--ember)'}}>◆</span> Proposed actions · you confirm before anything changes
+                      </div>
+                      {m.proposals.map((p: any, pi: number) => {
+                        const d = describeProposal(p);
+                        const resolved = p.state && p.state !== 'pending';
+                        return (
+                          <div key={p.id || pi} className="rounded-lg p-3" style={{background:'var(--bg)', border:`1px solid ${(d as any).danger ? 'rgba(244,63,94,0.4)' : 'var(--border-strong)'}`}}>
+                            <div className="flex items-start justify-between gap-3 flex-wrap">
+                              <div className="min-w-0 flex-1">
+                                <div className="text-[12px]"><span className="mono uppercase tracking-wider text-[10px]" style={{color:(d as any).danger ? 'var(--crit)' : 'var(--data)'}}>{d.verb}</span> <span className="font-semibold" style={{color:'var(--ink-bright)'}}>{d.detail}</span></div>
+                                {(d as any).sub && <div className="text-[11.5px] mt-0.5 leading-snug" style={{color:'var(--dim)'}}>{(d as any).sub}</div>}
+                                {p.input && p.input.rationale && <div className="text-[11px] mt-1 leading-snug" style={{color:'var(--muted)'}}>{p.input.rationale}</div>}
+                                {d.chips && d.chips.length > 0 && (
+                                  <div className="flex flex-wrap gap-1 mt-1.5">
+                                    {d.chips.map((c: any, ci: number) => <span key={ci} className="chip mono text-[10px]">{c}</span>)}
+                                  </div>
+                                )}
+                              </div>
+                              {!resolved ? (
+                                <div className="flex items-center gap-1.5 shrink-0">
+                                  <button onClick={() => resolveProposal(i, pi, 'apply')} className="mono text-[11px]" style={{background:'var(--glow-soft)', color:(d as any).danger ? 'var(--crit)' : 'var(--ember)', border:'1px solid var(--line-strong)', borderRadius:6, padding:'5px 11px'}}>{(d as any).danger ? 'Confirm →' : 'Apply →'}</button>
+                                  <button onClick={() => resolveProposal(i, pi, 'dismiss')} className="mono text-[11px]" style={{color:'var(--muted)', border:'1px solid var(--line-strong)', borderRadius:6, padding:'5px 9px'}}>Dismiss</button>
+                                </div>
+                              ) : (
+                                <span className="mono text-[11px] shrink-0" style={{color: p.state === 'applied' ? 'var(--pos)' : p.state === 'error' ? 'var(--crit)' : 'var(--faint)'}}>
+                                  {p.state === 'applied' ? '✓ applied' : p.state === 'error' ? '✕ failed' : 'dismissed'}
+                                </span>
+                              )}
+                            </div>
+                            {resolved && p.result && <div className="text-[11px] mono mt-1.5" style={{color: p.state === 'error' ? 'var(--crit)' : 'var(--dim)'}}>{p.result}</div>}
+                          </div>
+                        );
+                      })}
                     </div>
                   )}
                 </div>
@@ -1884,7 +2091,8 @@ function AgentConsole({ agentThreads, setAgentThreads, liveState }: any) {
             'Draft email to Olympia Pharmacy for NAD+ contract',
             'Risk-rank the 10 service lines for me',
             'Critical path if Cigna keeps PA after 3/6/2026',
-            'What if PGx volume hits 60/mo by Month 6?'
+            'Draft 3 tasks to unblock the entity gate',
+            'POS 55 counsel opinion came back clean — clear the gate'
           ].map(q => (
             <button
               key={q}
@@ -1901,7 +2109,7 @@ function AgentConsole({ agentThreads, setAgentThreads, liveState }: any) {
 // ============================================================
 // CLINICAL REFERENCE · mechanism / evidence / synergies / contraindications
 // ============================================================
-function ClinicalReferenceView({ setSelection, setActiveTab }) {
+function ClinicalReferenceView({ setSelection, setActiveTab, reviews, setReviews }: any) {
   const [expanded, setExpanded] = useState<any>(null);
   const [tierFilter, setTierFilter] = useState('all');
 
@@ -1923,7 +2131,7 @@ function ClinicalReferenceView({ setSelection, setActiveTab }) {
       </div>
 
       {/* Source governance — the volatile-claim registry */}
-      <SourceRegistryView />
+      <SourceRegistryView reviews={reviews} setReviews={setReviews}/>
 
       {/* Filter */}
       <div className="flex items-center gap-2 flex-wrap">
@@ -1990,8 +2198,10 @@ function ClinicalReferenceView({ setSelection, setActiveTab }) {
 
                   <div className="pt-3 flex items-center justify-between flex-wrap gap-2 hairline-t">
                     <div className="flex items-center gap-2 flex-wrap text-[10px] mono" style={{color:'var(--faint)'}}>
-                      <SourceBadge status="needs-review" title={clinicalSource(svc.slId, svc.name).notes}/>
-                      <span>review: Medical Director · annual · verified never</span>
+                      {(() => { const cid = `clinical:${svc.slId}`; const rv = reviews && reviews[cid]; return (<>
+                      <SourceBadge status={reviewStatusOf(cid, reviews, 'needs-review')} title={clinicalSource(svc.slId, svc.name).notes}/>
+                      <span>review: Medical Director · annual · verified {rv && rv.verifiedAt ? new Date(rv.verifiedAt).toLocaleDateString() : 'never'}</span>
+                      </>); })()}
                     </div>
                     {setSelection && SERVICE_LINES.find(s => s.id === svc.slId) && (
                       <button onClick={(e) => { e.stopPropagation(); setSelection({type:'service-line', id: svc.slId}); }} className="btn-primary text-[11px]">Operational dossier →</button>
@@ -2491,11 +2701,17 @@ function TopBar({ tabs, activeTab, onMenuClick, openCmdk, fin, activeLine, setAc
         <span className="text-[12px]" style={{color:'var(--faint)'}}>›</span>
         <span className="mono text-[12px] truncate" style={{color:'var(--ink-bright)'}}>{t?.label.toLowerCase()}</span>
       </div>
-      <select value={activeLine} onChange={e=>setActiveLine(e.target.value)} aria-label="Line lens"
-        className="mono text-[12px] flex-shrink-0" style={{background:'var(--surface)',color:activeLine!=='all'?'var(--ink-bright)':'var(--ink)',border:'1px solid '+(activeLine!=='all'?'var(--ember)':'var(--line-strong)'),borderRadius:7,padding:'7px 10px'}}>
-        <option value="all">All lines ▾</option>
-        {(lines||[]).map(l => <option key={l.id} value={l.id}>{l.name}</option>)}
-      </select>
+      <div className="flex items-center gap-1.5 flex-shrink-0">
+        <select value={activeLine} onChange={e=>setActiveLine(e.target.value)} aria-label="Line lens"
+          className="mono text-[12px]" style={{background:'var(--surface)',color:activeLine!=='all'?'var(--ink-bright)':'var(--ink)',border:'1px solid '+(activeLine!=='all'?'var(--ember)':'var(--line-strong)'),borderRadius:7,padding:'7px 10px',maxWidth:'42vw'}}>
+          <option value="all">All lines ▾</option>
+          {(lines||[]).map(l => <option key={l.id} value={l.id}>{l.name}</option>)}
+        </select>
+        {activeLine !== 'all' && (
+          <button onClick={() => setActiveLine('all')} aria-label="Clear line lens — show all lines" title="Clear lens — show all lines"
+            className="mono flex-shrink-0 flex items-center justify-center" style={{background:'var(--surface)',color:'var(--ember)',border:'1px solid var(--ember)',borderRadius:7,width:34,height:34,fontSize:14,lineHeight:1}}>✕</button>
+        )}
+      </div>
       <div className="hidden md:flex items-center gap-3 text-[11px] mono flex-shrink-0" style={{color:'var(--dim)'}}>
         <span>$773K cap</span>
         <span style={{color:'var(--faint)'}}>·</span>
@@ -2808,7 +3024,7 @@ function ExecutionZone(props) {
     <div>
       <SubTabs tabs={[{id:'tasks',label:'Tasks'},{id:'decisions',label:'Decisions'},{id:'gantt',label:'Gantt'}]} active={sub} set={setSub}/>
       {props.activeLine && props.activeLine !== 'all' && (() => { const L = SERVICE_LINES.find(s=>s.id===props.activeLine); return (
-        <div className="mono text-[11px] mb-4" style={{color:'var(--ember)'}}>● lens · {L ? L.name : props.activeLine}: Gantt shows this line; Tasks &amp; Decisions are wave-level, so they show Wave {L ? L.wave : '?'} (plus any manually-added items).</div>
+        <div className="flex items-center gap-2 flex-wrap mb-4"><span className="mono text-[11px]" style={{color:'var(--ember)'}}>● lens · {L ? L.name : props.activeLine}: Gantt shows this line; Tasks &amp; Decisions are wave-level, so they show Wave {L ? L.wave : '?'} (plus any manually-added items).</span><button onClick={() => props.setActiveLine && props.setActiveLine('all')} className="mono text-[11px] flex-shrink-0" style={{color:'var(--ember)', border:'1px solid var(--ember)', borderRadius:6, padding:'3px 8px'}}>✕ clear lens</button></div>
       ); })()}
       {sub==='tasks' && <TaskManager tasks={props.tasks} setTasks={props.setTasks} activeLine={props.activeLine}/>}
       {sub==='decisions' && <DecisionsView decisions={props.decisions} setDecisions={props.setDecisions} tasks={props.tasks} setTasks={props.setTasks} setSelection={props.setSelection} activeLine={props.activeLine} layer0={props.layer0} setLayer0={props.setLayer0}/>}
@@ -2821,7 +3037,7 @@ function IntelligenceZone(props) {
   return (
     <div>
       <SubTabs tabs={[{id:'agent',label:'Agent'},{id:'changelog',label:'Changelog'}]} active={sub} set={setSub}/>
-      {sub==='agent' && <AgentConsole agentThreads={props.agentThreads} setAgentThreads={props.setAgentThreads} liveState={props.liveState}/>}
+      {sub==='agent' && <AgentConsole agentThreads={props.agentThreads} setAgentThreads={props.setAgentThreads} liveState={props.liveState} applyAgentAction={props.applyAgentAction}/>}
       {sub==='changelog' && <Changelog snapshots={props.snapshots} setSnapshots={props.setSnapshots} liveState={props.liveState}/>}
     </div>
   );
@@ -2845,7 +3061,56 @@ function App() {
   const [layer0, setLayer0, l0Loaded] = usePersistedState('layer0', {});
   const [snapshots, setSnapshots, snapsLoaded] = usePersistedState('snapshots', []);
   const [finScenarios, setFinScenarios] = usePersistedState('finScenarios', []);
+  const [sourceReviews, setSourceReviews] = usePersistedState('sourceReviews', {});
   const fin = NTN.engine.financials(finModel);
+
+  // Agent writeback chokepoint. Agents PROPOSE actions; this applies a proposal
+  // only when Cole confirms it in the console. Functional setters so rapid
+  // confirms don't read stale state. Returns {ok, message} for inline feedback.
+  // Mirrors the existing manual flows (taskFromDecision, the Decisions gate-flip)
+  // — clearing a gate stays an explicit, confirmed click; nothing auto-flips.
+  const applyAgentAction = (name, input, meta: any = {}) => {
+    const i = input || {};
+    if (name === 'propose_task') {
+      if (!i.title || !String(i.title).trim()) return { ok: false, message: 'No task title provided.' };
+      const task = {
+        id: `task_agent_${Date.now()}`,
+        title: String(i.title).trim(),
+        owner: i.owner || 'Cole',
+        cost: 0,
+        source: `agent · ${meta.agentName || 'console'}`,
+        status: 'in_progress',
+        created: Date.now(),
+        severity: ['low','medium','high','critical'].includes(i.severity) ? i.severity : 'medium',
+        dueDate: i.dueDate || undefined,
+        linkedLineId: i.linkedLineId || undefined,
+        linkedGateId: i.linkedGateId || undefined,
+        linkedDecisionId: i.linkedDecisionId || undefined,
+      };
+      setTasks(prev => [task, ...prev]);
+      return { ok: true, message: `Task added to Execution: “${task.title}”.` };
+    }
+    if (name === 'clear_layer0_gate') {
+      const g = NTN.engine.LAYER0.find((x: any) => x.id === i.gateId);
+      if (!g) return { ok: false, message: `Unknown gate "${i.gateId}".` };
+      setLayer0(prev => ({ ...prev, [i.gateId]: { ...(prev[i.gateId] || {}), status: 'done' } }));
+      return { ok: true, message: `Spine gate cleared: ${g.name}.` };
+    }
+    if (name === 'record_decision') {
+      const d = OPEN_DECISIONS.find(x => x.id === i.decisionId);
+      if (!d) return { ok: false, message: `Unknown decision "${i.decisionId}".` };
+      if (!['yes','no','legal','discuss'].includes(i.choice)) return { ok: false, message: `Invalid choice "${i.choice}".` };
+      setDecisions(prev => ({ ...prev, [i.decisionId]: { choice: i.choice, decidedAt: new Date().toISOString() } }));
+      return { ok: true, message: `Decision ${i.decisionId} recorded as “${i.choice}”.` };
+    }
+    if (name === 'save_scenario') {
+      if (!i.name || !String(i.name).trim()) return { ok: false, message: 'No scenario name provided.' };
+      const f = NTN.engine.financials(finModel);
+      setFinScenarios(prev => [{ id: 'sc_' + Date.now(), name: String(i.name).trim(), ts: new Date().toISOString(), drivers: JSON.parse(JSON.stringify(finModel)), m12: f.m12Monthly, annualized: f.annualized, gm: f.blendedGM }, ...prev]);
+      return { ok: true, message: `Scenario saved: “${String(i.name).trim()}”.` };
+    }
+    return { ok: false, message: `Unsupported action "${name}".` };
+  };
 
   // Auto-capture exactly one snapshot per ISO week, once all inputs have loaded.
   const autoSnap = useRef(false);
@@ -2951,15 +3216,15 @@ function App() {
           {activeTab === 'command' && (
             <div className="space-y-6">
               <WayThroughPanel layer0={layer0} serviceState={serviceState} fin={fin} setActiveTab={goZone} setActiveLine={setActiveLine}/>
-              <CommandBrief checklist={checklist} setChecklist={setChecklist} tasks={tasks} setTasks={setTasks} serviceState={serviceState} layer0={layer0} setLayer0={setLayer0} fin={fin} setActiveTab={goZone} setSelection={setSelection} setActiveLine={setActiveLine}/>
+              <CommandBrief checklist={checklist} setChecklist={setChecklist} tasks={tasks} setTasks={setTasks} serviceState={serviceState} layer0={layer0} setLayer0={setLayer0} fin={fin} setActiveTab={goZone} setSelection={setSelection} setActiveLine={setActiveLine} reviews={sourceReviews}/>
             </div>
           )}
-          {activeTab === 'lines' && <ServiceLines serviceState={serviceState} setServiceState={setServiceState} tasks={tasks} setTasks={setTasks} layer0={layer0} setSelection={setSelection} activeLine={activeLine}/>}
+          {activeTab === 'lines' && <ServiceLines serviceState={serviceState} setServiceState={setServiceState} tasks={tasks} setTasks={setTasks} layer0={layer0} setSelection={setSelection} activeLine={activeLine} setActiveLine={setActiveLine}/>}
           {activeTab === 'spine' && <CapabilityMap capMap={capMap} setCapMap={setCapMap} layer0={layer0} setLayer0={setLayer0} serviceState={serviceState} setActiveTab={goZone}/>}
-          {activeTab === 'capital' && <CapitalView finModel={finModel} setFinModel={setFinModel} fin={fin} activeLine={activeLine} finScenarios={finScenarios} setFinScenarios={setFinScenarios}/>}
-          {activeTab === 'execution' && <ExecutionZone tasks={tasks} setTasks={setTasks} decisions={decisions} setDecisions={setDecisions} ganttState={ganttState} setGanttState={setGanttState} setSelection={setSelection} activeLine={activeLine} finModel={finModel} serviceState={serviceState} layer0={layer0} setLayer0={setLayer0}/>}
-          {activeTab === 'intelligence' && <IntelligenceZone agentThreads={agentThreads} setAgentThreads={setAgentThreads} snapshots={snapshots} setSnapshots={setSnapshots} liveState={{ checklist, finModel, serviceState, layer0, decisions, tasks, activeLine }}/>}
-          {activeTab === 'clinical' && <ClinicalReferenceView setSelection={setSelection} setActiveTab={goZone}/>}
+          {activeTab === 'capital' && <CapitalView finModel={finModel} setFinModel={setFinModel} fin={fin} activeLine={activeLine} setActiveLine={setActiveLine} finScenarios={finScenarios} setFinScenarios={setFinScenarios}/>}
+          {activeTab === 'execution' && <ExecutionZone tasks={tasks} setTasks={setTasks} decisions={decisions} setDecisions={setDecisions} ganttState={ganttState} setGanttState={setGanttState} setSelection={setSelection} activeLine={activeLine} setActiveLine={setActiveLine} finModel={finModel} serviceState={serviceState} layer0={layer0} setLayer0={setLayer0}/>}
+          {activeTab === 'intelligence' && <IntelligenceZone agentThreads={agentThreads} setAgentThreads={setAgentThreads} snapshots={snapshots} setSnapshots={setSnapshots} applyAgentAction={applyAgentAction} liveState={{ checklist, finModel, serviceState, layer0, decisions, tasks, activeLine }}/>}
+          {activeTab === 'clinical' && <ClinicalReferenceView setSelection={setSelection} setActiveTab={goZone} reviews={sourceReviews} setReviews={setSourceReviews}/>}
           {activeTab === 'staffing' && <StaffingView/>}
         </main>
         <footer className="app-footer px-4 md:px-6 py-4 hairline-t flex items-center justify-between flex-wrap gap-3">

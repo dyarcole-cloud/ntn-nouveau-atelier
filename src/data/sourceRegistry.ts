@@ -5,7 +5,7 @@
 // awaiting Cole's clinical/legal/finance review. This makes the trust state
 // VISIBLE; it does not change any number or claim.
 
-import type { SourceRef } from '../types/sources';
+import type { SourceRef, SourceStatus } from '../types/sources';
 
 export const SOURCE_REGISTRY: SourceRef[] = [
   // ── Regulatory / statutory ────────────────────────────────────────────────
@@ -61,6 +61,28 @@ const _byId: Record<string, SourceRef> = Object.fromEntries(SOURCE_REGISTRY.map(
 export function getSource(id: string): SourceRef | undefined { return _byId[id]; }
 export function needsReview(): SourceRef[] { return SOURCE_REGISTRY.filter(s => s.status === 'needs-review'); }
 export function byCategory(cat: SourceRef['category']): SourceRef[] { return SOURCE_REGISTRY.filter(s => s.category === cat); }
+
+// ── Stateful review overlay ──────────────────────────────────────────────────
+// The registry data above is the immutable baseline (no claim is ever asserted
+// verified in code). A `reviews` map (persisted, local-only) lets Cole record
+// that HE has reviewed a claim on his own clock — it overrides the displayed
+// status without rewriting the underlying assertion. Shape:
+//   reviews[id] = { status, verifiedAt?, verifiedBy?, note? }
+export interface SourceReview { status: SourceStatus; verifiedAt?: string; verifiedBy?: string; note?: string; }
+
+// Effective status = Cole's recorded review if present, else the baseline.
+// `base` lets dynamic (clinical:slId) sources, which aren't in the registry,
+// pass their own baseline status.
+export function reviewStatusOf(id: string, reviews?: Record<string, SourceReview>, base: SourceStatus = 'needs-review'): SourceStatus {
+  return (reviews && reviews[id] && reviews[id].status) || (_byId[id] && _byId[id].status) || base;
+}
+export function reviewOf(id: string, reviews?: Record<string, SourceReview>): SourceReview | undefined {
+  return reviews ? reviews[id] : undefined;
+}
+// Count of registry claims still flagged needs-review, honoring the overlay.
+export function countNeedsReview(reviews?: Record<string, SourceReview>): number {
+  return SOURCE_REGISTRY.filter(s => reviewStatusOf(s.id, reviews, s.status) === 'needs-review').length;
+}
 
 // Clinical evidence governance: each line's evidence summary cites named trials
 // but has not been independently re-verified in-app. Synthesized (not fabricated)

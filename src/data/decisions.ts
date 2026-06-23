@@ -29,4 +29,12 @@ export const OPEN_DECISIONS: Decision[] = [
   { id:'d23', wave:3, q:'Cap at 10 lines or add 11th/12th?', impact:'Focus discipline', defaultAns:'Cap at 10 — execute these before expanding', category:'Strategic' },
 ];
 
-export const DECISION_GATE_MAP: Record<string, string> = { d2:'entity', d10:'pos55' };
+// Suggested legal-spine gate each decision most directly informs. Drives the
+// pre-selected gate in the Decisions "Clears gate?" control (suggest + confirm
+// only — resolving a decision never auto-flips a gate). Kept to genuine 1:1
+// correspondences; weak links are left out so the suggestion is trustworthy.
+//   d2  entity     — TMS PMC/MSO vs in-Neurish IS the entity/PC-structure call
+//   d8  dea        — buy-and-bill Spravato requires per-site DEA registration
+//   d9  cpom       — in-house vs contracted physician oversight is the CPOM call
+//   d10 pos55      — POS 55 vs 11 for Spravato billing
+export const DECISION_GATE_MAP: Record<string, string> = { d2:'entity', d8:'dea', d9:'cpom', d10:'pos55' };

@@ -78,6 +78,72 @@ Cole is a peer. Skip preamble. Be specific about timelines and costs. Flag staff
   },
 };
 
+// Proposable actions. The model NEVER mutates state — it can only PROPOSE these,
+// and Cole confirms or dismisses each one in the UI. Inputs are validated
+// client-side against live state before anything is applied.
+const ACTION_TOOLS = [
+  {
+    name: 'propose_task',
+    description: 'Propose adding an operational task to the Execution tracker. Use when the user wants a concrete to-do captured, or when you recommend a specific next action with an owner.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        title: { type: 'string', description: 'Imperative task description, e.g. "Secure contracted anesthesiologist for ketamine".' },
+        owner: { type: 'string', description: 'Who owns it (e.g. Cole, Compliance, Operations, Medical Director). Defaults to Cole.' },
+        severity: { type: 'string', enum: ['low', 'medium', 'high', 'critical'] },
+        dueDate: { type: 'string', description: 'Optional due date, YYYY-MM-DD.' },
+        linkedLineId: { type: 'string', description: 'Optional service-line id: pgx, spravato, tms, art, sgb, ketamine, neuro, nad, peptides, hbot.' },
+        linkedGateId: { type: 'string', description: 'Optional Layer-0 gate id: entity, cpom, dea, rems, dhcs, pos55, malpractice.' },
+        linkedDecisionId: { type: 'string', description: 'Optional decision id, d1–d23.' },
+        rationale: { type: 'string', description: 'One line on why this task matters now.' },
+      },
+      required: ['title'],
+    },
+  },
+  {
+    name: 'clear_layer0_gate',
+    description: 'Propose marking a Layer-0 legal-spine gate as DONE. Only propose when the user states the prerequisite is genuinely satisfied (e.g. counsel opinion received). Clearing a spine gate unblocks downstream service lines, so this is high-consequence — always explain.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        gateId: { type: 'string', enum: ['entity', 'cpom', 'dea', 'rems', 'dhcs', 'pos55', 'malpractice'] },
+        rationale: { type: 'string', description: 'What evidence shows this gate is satisfied.' },
+      },
+      required: ['gateId'],
+    },
+  },
+  {
+    name: 'record_decision',
+    description: 'Propose recording the resolution of an open platform decision (d1–d23). Use when the user has made or is endorsing a call.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        decisionId: { type: 'string', description: 'Decision id, d1–d23.' },
+        choice: { type: 'string', enum: ['yes', 'no', 'legal', 'discuss'], description: 'yes = approve, no = reject, legal = defer to counsel, discuss = needs discussion.' },
+        rationale: { type: 'string' },
+      },
+      required: ['decisionId', 'choice'],
+    },
+  },
+  {
+    name: 'save_scenario',
+    description: 'Propose saving the CURRENT live financial driver model as a named what-if scenario for later comparison. Use after discussing or recommending a financial configuration.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Short scenario name, e.g. "Drop HBOT, +20% PGx volume".' },
+        rationale: { type: 'string' },
+      },
+      required: ['name'],
+    },
+  },
+];
+
+const ACTION_GUIDANCE = `
+
+## ACTIONS YOU CAN PROPOSE
+You have tools to PROPOSE actions inside the live OS: propose_task, clear_layer0_gate, record_decision, save_scenario. These are PROPOSALS ONLY — they are surfaced to Cole as confirm/dismiss buttons and never execute on their own. Use them when the conversation produces a concrete, actionable next step; otherwise just answer in prose. Always accompany a proposal with a brief text explanation. Never claim an action is "done" — Cole decides. Don't propose clearing a legal-spine gate unless the prerequisite is genuinely met.`;
+
 const CORS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
@@ -112,7 +178,7 @@ export const handler = async (event: any) => {
   })).filter((m: any) => m.content.trim().length > 0);
   if (safeMessages.length === 0) return json(400, { error: 'no_messages' });
 
-  const system = profile.systemPrompt + (liveStateSummary
+  const system = profile.systemPrompt + ACTION_GUIDANCE + (liveStateSummary
     ? `\n\n## LIVE STATE (current platform state — read-only context)\n${String(liveStateSummary).slice(0, 4000)}`
     : '');
 
@@ -120,7 +186,7 @@ export const handler = async (event: any) => {
     const resp = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01' },
-      body: JSON.stringify({ model: MODEL, max_tokens: 1500, system, messages: safeMessages }),
+      body: JSON.stringify({ model: MODEL, max_tokens: 2000, system, messages: safeMessages, tools: ACTION_TOOLS }),
     });
     const data: any = await resp.json().catch(() => ({}));
     if (!resp.ok) {
@@ -129,8 +195,13 @@ export const handler = async (event: any) => {
       console.error('[anthropic-proxy] upstream error', resp.status, data && data.error && data.error.message);
       return json(502, { error: 'upstream', message: 'Agent upstream error. Check the Netlify function logs.' });
     }
-    const text = (data.content || []).filter((c: any) => c.type === 'text').map((c: any) => c.text).join('\n');
-    return json(200, { text, model: MODEL });
+    const blocks = data.content || [];
+    const text = blocks.filter((c: any) => c.type === 'text').map((c: any) => c.text).join('\n');
+    // tool_use blocks become confirm/dismiss proposals in the UI — never executed here.
+    const proposals = blocks
+      .filter((c: any) => c.type === 'tool_use')
+      .map((c: any) => ({ id: c.id, name: c.name, input: c.input || {} }));
+    return json(200, { text, model: MODEL, proposals });
   } catch (e: any) {
     return json(502, { error: 'proxy_error', message: e && e.message ? e.message : 'proxy error' });
   }
